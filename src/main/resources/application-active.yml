@@ -1,1 +1,14 @@
+orchestration :
+    dependences : "{\"ServiceC\":[],\"ServiceB\":[\"ServiceC\"],\"ServiceA\":[\"ServiceC\",\"ServiceB\"]}"
+    serviceDataProperites:
+        serviceName : "orchestration"
+        ip : "localhost"
+        port : 8080
+        rootUrl : "/iOrchestration"
+    zNodeInfoProperites:
+        regZnodePath : "/regManageNode"
+        regZnodeChildPath : "/regManageNode/regManageChildNode"
+        depZnodePath : "/depManageNode"
+        zookeeperHostport : "172.18.0.10:2181,172.18.0.11:2181,172.18.0.12:2181"
+        
 tomcatPort : 8080
