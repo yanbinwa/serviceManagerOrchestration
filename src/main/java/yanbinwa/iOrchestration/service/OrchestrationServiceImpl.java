@@ -101,7 +101,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     /** Zookeeper connection */
     ZooKeeper zk = null;
     
-    boolean isRunning = true;
+    boolean isRunning = false;
     
     Watcher zkWatcher = new ZkWatcher();
     
@@ -167,31 +167,67 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public void start()
     {
-        isRunning = true;
-        /** 连接Zookeeper，创建相应的Znode，并监听其它服务创建的Znode */
-        zookeeperThread = new Thread(new Runnable() {
+        if(!isRunning)
+        {
+            logger.info("Start orchestration serivce ...");
+            isRunning = true;
+            /** 连接Zookeeper，创建相应的Znode，并监听其它服务创建的Znode */
+            zookeeperThread = new Thread(new Runnable() {
 
-            @Override
-            public void run()
-            {
-                zookeeperEventHandler();
-            }
+                @Override
+                public void run()
+                {
+                    zookeeperEventHandler();
+                }
+                
+            });
+            zookeeperThread.start();
             
-        });
-        zookeeperThread.start();
-        
-        /** 定期创建一个WatcherEvent, 让服务自动与zookeeper同步 */
-        zookeeperSync = new Thread(new Runnable() {
+            /** 定期创建一个WatcherEvent, 让服务自动与zookeeper同步 */
+            zookeeperSync = new Thread(new Runnable() {
 
-            @Override
-            public void run()
-            {
-                syncWithZookeeper();
-            }
+                @Override
+                public void run()
+                {
+                    syncWithZookeeper();
+                }
+                
+            });
+            zookeeperSync.start();
+        }
+        else
+        {
+            logger.info("Orchestration serivce has readly started ...");
+        }
+    }
+    
+    @Override
+    public void stop()
+    {
+        if (isRunning)
+        {
+            logger.info("Stop orchestration serivce ...");
             
-        });
-        zookeeperSync.start();
-        
+            isRunning = false;
+            if (zookeeperThread != null)
+            {
+                zookeeperThread.interrupt();
+                zookeeperThread = null;
+            }
+            if (zookeeperSync != null)
+            {
+                zookeeperSync.interrupt();
+                zookeeperSync = null;
+            }
+            statue.set(CommonConstants.SERVICE_STANDBY);
+            onLineServiceData = new HashMap<String, Set<ZNodeServiceData>>();
+            createdZnodeToServiceName = new HashMap<String, ZNodeServiceData>();
+            readyService = new HashSet<String>();
+        }
+        else
+        {
+            logger.info("Orchestration serivce has ready stopped...");
+        }
     }
     
     /**
@@ -202,7 +238,6 @@ public class OrchestrationServiceImpl implements OrchestrationService
     {
         while(isRunning)
         {
-            //五分钟同步一次
             WatchedEvent event = new WatchedEvent(Watcher.Event.EventType.NodeChildrenChanged, null, regZnodePath);
             zookeeperEventQueue.offer(event);
             try
@@ -211,7 +246,14 @@ public class OrchestrationServiceImpl implements OrchestrationService
             } 
             catch (InterruptedException e)
             {
-                logger.error("syncWithZookeeper error");
+                if(!isRunning)
+                {
+                    logger.info("Stopping the orchestration service");
+                }
+                else
+                {
+                    e.printStackTrace();
+                }
             }
         }
     }
@@ -236,6 +278,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
             else
             {
                 logger.error("buildDependenceMap, key type should be String, " + keyObj);
+                continue;
             }
             Set<String> dependenceSet = iDependenceMap.get(key);
             if(dependenceSet == null)
@@ -255,26 +298,6 @@ public class OrchestrationServiceImpl implements OrchestrationService
             }
         }
     }
-
-    @Override
-    public void stop()
-    {
-        isRunning = false;
-        if (zookeeperThread != null)
-        {
-            zookeeperThread.interrupt();
-            zookeeperThread = null;
-        }
-        if (zookeeperSync != null)
-        {
-            zookeeperSync.interrupt();
-            zookeeperSync = null;
-        }
-        statue.set(CommonConstants.SERVICE_STANDBY);
-        onLineServiceData = new HashMap<String, Set<ZNodeServiceData>>();
-        createdZnodeToServiceName = new HashMap<String, ZNodeServiceData>();
-        readyService = new HashSet<String>();
-    }
     
     class ZkWatcher implements Watcher
     {
@@ -287,6 +310,8 @@ public class OrchestrationServiceImpl implements OrchestrationService
     
     private void setUpZnodeForActive() throws KeeperException, InterruptedException
     {
+        logger.info("setUpZnodeForActive ...");
+        
         if (ZkUtil.checkZnodeExist(zk, regZnodePath))
         {
             ZkUtil.setData(zk, regZnodePath, serviceData.createJsonObject());
@@ -342,6 +367,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
             {
                 //这里有两种情况，一种是有其它的服务已经创建了父目录，但还没来得及创建子目录，另一种情况是之前服务异常退出，没有来得及删除
                 Thread.sleep(OrchestrationService.ZKNODE_REGCHILDPATH_WAITTIME);
+                //等待建立子目录，但是还没有建立说明是之前异常退出时遗留的
                 if(!ZkUtil.checkZnodeExist(zk, regZnodeChildPath))
                 {
                     setUpZnodeForActive();
@@ -394,6 +420,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     
     private void handerZookeeperEventAsStandby()
     {
+        logger.info("Starting handler zookeepr event for standby... ");
         try
         {
             ZkUtil.watchZnodeChildeChange(zk, regZnodePath, zkWatcher);
@@ -405,6 +432,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 {
                     continue;
                 }
+                logger.debug("Get zk event at standby mode: " + event.toString());
                 if(event.getType() == Watcher.Event.EventType.NodeChildrenChanged)
                 {
                     if (!ZkUtil.checkZnodeExist(zk, regZnodeChildPath))
@@ -412,7 +440,6 @@ public class OrchestrationServiceImpl implements OrchestrationService
                         statue.set(CommonConstants.SERVICE_ACTIVE);
                         continue;
                     }
-                    //重新添加watcher
                     String path = event.getPath();
                     ZkUtil.watchZnodeChildeChange(zk, path, zkWatcher);
                 }
@@ -441,10 +468,12 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 e.printStackTrace();
             }
         }
+        logger.info("End handler zookeepr event for standby... ");
     }
     
     private void handerZookeeperEventAsActive()
     {
+        logger.info("Starting handler zookeepr event for active... ");
         try
         {
             if (!ZkUtil.checkZnodeExist(zk, regZnodeChildPath))
@@ -457,6 +486,15 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 ZkUtil.setData(zk, regZnodePath, serviceData.createJsonObject());
                 ZkUtil.setData(zk, depZnodePath, serviceData.createJsonObject());
             }
+            else
+            {
+                ZNodeServiceData data = new ZNodeServiceData(ZkUtil.getData(zk, regZnodePath));
+                //被其它的device抢先设置了
+                if(!data.equals(this.serviceData))
+                {
+                    statue.set(CommonConstants.SERVICE_STANDBY);
+                }
+            }
             while(isRunning && statue.get() == CommonConstants.SERVICE_ACTIVE)
             {
                 WatchedEvent event = zookeeperEventQueue.poll(OrchestrationService.ZKEVENT_QUEUE_TIMEOUT, 
@@ -465,6 +503,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 {
                     continue;
                 }
+                logger.debug("Get zk event at active mode: " + event.toString());
                 if(event.getType() == Watcher.Event.EventType.NodeChildrenChanged)
                 {
                     handerChildNodeChange(event);
@@ -496,6 +535,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 e.printStackTrace();
             }
         }
+        logger.info("End handler zookeepr event for active... ");
     }
     
     private void handerChildNodeChange(WatchedEvent event) throws KeeperException, InterruptedException
@@ -503,6 +543,8 @@ public class OrchestrationServiceImpl implements OrchestrationService
         String path = event.getPath();
         //获取到的是相对路径，或znode的名称，例如node10000000000
         List<String> childList = ZkUtil.getChildren(zk, path);
+        logger.debug("Get current children list: " + childList);
+        
         Map<String, ZNodeServiceData> addZNodeMap = new HashMap<String, ZNodeServiceData>();
         Set<String> delZNodeSet = new HashSet<String>();
         for(String childNode : childList)
@@ -530,6 +572,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                         throw e;
                     }
                 }
+                logger.info("Add a new childnode: " + childNode + "; data is: " + data);
                 addZNodeMap.put(childNode, new ZNodeServiceData(data));
             }
         }
@@ -537,11 +580,13 @@ public class OrchestrationServiceImpl implements OrchestrationService
         {
             if(!childList.contains(childNode))
             {
+                logger.info("Remove a new childnode: " + childNode);
                 delZNodeSet.add(childNode);
             }
         }
         if(!addZNodeMap.isEmpty() || !delZNodeSet.isEmpty())
         {
+            logger.info("updateReadyService");
             updateReadyService(addZNodeMap, delZNodeSet);
         }
     }
@@ -564,6 +609,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
             if(serviceInfoSet == null)
             {
                 serviceInfoSet = new HashSet<ZNodeServiceData>();
+                logger.info("Service is on line: " + serviceName);
                 onLineServiceDataCopy.put(serviceName, serviceInfoSet);
             }
             if(serviceInfoSet.contains(value))
@@ -571,6 +617,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 logger.error("Should not contain the ZNodeServiceData: " + value.toString());
                 continue;
             }
+            logger.info("Service instance is on line: " + value.toString());
             serviceInfoSet.add(value);
         }
         for(String childNode : delZNodeSet)
@@ -594,9 +641,11 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 logger.error("Should contain the ZNodeServiceData: " + value.toString());
                 continue;
             }
+            logger.info("Service instance is off line: " + value.toString());
             serviceInfoSet.remove(value);
             if(serviceInfoSet.size() == 0)
             {
+                logger.info("Service is off line: " + serviceName);
                 onLineServiceDataCopy.remove(serviceName);
             }
         }
