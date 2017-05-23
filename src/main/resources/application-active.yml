@@ -1,5 +1,5 @@
 orchestration :
-    dependences : "{\"ServiceC\":[],\"ServiceB\":[\"ServiceC\"],\"ServiceA\":[\"ServiceC\",\"ServiceB\"]}"
+    dependences : "{\"collection_C\":[],\"collection_B\":[\"collection_C\"],\"collection_A\":[\"collection_C\",\"collection_B\"]}"
     serviceDataProperites:
         serviceName : "orchestration"
         ip : "172.18.0.21"
@@ -9,6 +9,6 @@ orchestration :
         regZnodePath : "/regManageNode"
         regZnodeChildPath : "/regManageNode/regManageChildNode"
         depZnodePath : "/depManageNode"
-        zookeeperHostport : "172.18.0.21:2191,172.18.0.22:2192,172.18.0.23:2193"
+        zookeeperHostport : "172.18.0.11:2191,172.18.0.12:2192,172.18.0.13:2193"
         
 tomcatPort : 8091

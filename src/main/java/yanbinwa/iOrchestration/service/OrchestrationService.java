@@ -22,6 +22,7 @@ public interface OrchestrationService extends InitializingBean, ServiceLifeCycle
     
     public static final int ZK_SYNC_INTERVAL = 60 * 1000;
     public static final int ZKNODE_REGCHILDPATH_WAITTIME = 1000;
+    public static final int ZK_WAIT_INTERVAL = 10 * 1000;
     
     JSONObject getReadyService() throws ServiceUnavailableException;
     

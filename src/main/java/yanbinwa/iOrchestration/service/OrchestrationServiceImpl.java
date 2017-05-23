@@ -236,7 +236,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
      */
     private void syncWithZookeeper()
     {
-        while(isRunning)
+        while(isRunning && zk != null)
         {
             WatchedEvent event = new WatchedEvent(Watcher.Event.EventType.NodeChildrenChanged, null, regZnodePath);
             zookeeperEventQueue.offer(event);
@@ -334,6 +334,31 @@ public class OrchestrationServiceImpl implements OrchestrationService
         logger.info("Create znode: " + regZNodeChildPathStr);
     }
     
+    private void waitingForZookeeper()
+    {
+        logger.info("Waiting for the zookeeper...");
+        while(zk.getState() == ZooKeeper.States.CONNECTING && isRunning)
+        {
+            try
+            {
+                Thread.sleep(ZK_WAIT_INTERVAL);
+                logger.debug("Try to connection to zookeeper");
+            } 
+            catch (InterruptedException e)
+            {
+                if (!isRunning)
+                {
+                    logger.info("Stop this thread");
+                }
+                else
+                {
+                    e.printStackTrace();
+                }
+            }            
+        }
+        logger.info("Connected to the zookeeper " + zookeeperHostport);
+    }
+    
     private void zookeeperEventHandler()
     {
         isRunning = true;
@@ -350,10 +375,14 @@ public class OrchestrationServiceImpl implements OrchestrationService
             }
         }
         zk = ZkUtil.connectToZk(zookeeperHostport, zkWatcher);
-        if(zk == null)
+        if (zk == null)
         {
             logger.error("Can not connect to zookeeper: " + zookeeperHostport);
             return;
+        }
+        if(zk.getState() == ZooKeeper.States.CONNECTING)
+        {
+            waitingForZookeeper();
         }
         try
         {
@@ -440,8 +469,6 @@ public class OrchestrationServiceImpl implements OrchestrationService
                         statue.set(CommonConstants.SERVICE_ACTIVE);
                         continue;
                     }
-                    String path = event.getPath();
-                    ZkUtil.watchZnodeChildeChange(zk, path, zkWatcher);
                 }
                 else if (event.getType() == Watcher.Event.EventType.None && event.getState() == Watcher.Event.KeeperState.SyncConnected)
                 {
@@ -451,6 +478,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 {
                     logger.error("Unknown event: " + event.toString());
                 }
+                ZkUtil.watchZnodeChildeChange(zk, regZnodePath, zkWatcher);
             } 
         }
         catch (KeeperException e)
@@ -485,6 +513,8 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 //更新ActiveService信息
                 ZkUtil.setData(zk, regZnodePath, serviceData.createJsonObject());
                 ZkUtil.setData(zk, depZnodePath, serviceData.createJsonObject());
+                //提前先做一次扫描
+                handerChildNodeChange(this.regZnodePath);
             }
             else
             {
@@ -506,9 +536,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 logger.debug("Get zk event at active mode: " + event.toString());
                 if(event.getType() == Watcher.Event.EventType.NodeChildrenChanged)
                 {
-                    handerChildNodeChange(event);
-                    String path = event.getPath();
-                    ZkUtil.watchZnodeChildeChange(zk, path, zkWatcher);
+                    handerChildNodeChange(event.getPath());
                 }
                 else if (event.getType() == Watcher.Event.EventType.None && event.getState() == Watcher.Event.KeeperState.SyncConnected)
                 {
@@ -518,11 +546,44 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 {
                     logger.error("Unknown event: " + event.toString());
                 }
+                ZkUtil.watchZnodeChildeChange(zk, regZnodePath, zkWatcher);
             }
         }
         catch (KeeperException e)
         {
-            logger.error("handerZookeeperEventAsStandby meet error " + e.getMessage());
+            if(e instanceof KeeperException.SessionExpiredException)
+            {
+                logger.info("zookeepr session is expired, need to reconnect");
+                if (zk != null)
+                {
+                    try
+                    {
+                        ZkUtil.closeZk(zk);
+                    } 
+                    catch (InterruptedException e1)
+                    {
+                        //do nothing
+                    }
+                }
+                statue.set(CommonConstants.SERVICE_STANDBY);
+                onLineServiceData = new HashMap<String, Set<ZNodeServiceData>>();
+                createdZnodeToServiceName = new HashMap<String, ZNodeServiceData>();
+                readyService = new HashSet<String>();
+                zk = ZkUtil.connectToZk(zookeeperHostport, zkWatcher);
+                if (zk == null)
+                {
+                    logger.error("Can not connect to zookeeper: " + zookeeperHostport);
+                    return;
+                }
+                if(zk.getState() == ZooKeeper.States.CONNECTING)
+                {
+                    waitingForZookeeper();
+                }
+            }
+            else
+            {
+                e.printStackTrace();
+            }
         }
         catch (InterruptedException e)
         {
@@ -538,9 +599,9 @@ public class OrchestrationServiceImpl implements OrchestrationService
         logger.info("End handler zookeepr event for active... ");
     }
     
-    private void handerChildNodeChange(WatchedEvent event) throws KeeperException, InterruptedException
+    private void handerChildNodeChange(String parentPath) throws KeeperException, InterruptedException
     {
-        String path = event.getPath();
+        String path = parentPath;
         //获取到的是相对路径，或znode的名称，例如node10000000000
         List<String> childList = ZkUtil.getChildren(zk, path);
         logger.debug("Get current children list: " + childList);
