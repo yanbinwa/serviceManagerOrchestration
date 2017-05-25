@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -11,6 +12,11 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.log4j.Logger;
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
@@ -29,6 +35,14 @@ import yanbinwa.common.utils.ZkUtil;
 import yanbinwa.common.zNodedata.ZNodeDependenceData;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
+
+/**
+ * 
+ * orchestration还要监听kafka的状态，因为kafka也是一个重要的依赖
+ * 
+ * @author yanbinwa
+ *
+ */
 
 @Service("orchestrationService")
 @EnableAutoConfiguration
@@ -49,27 +63,38 @@ public class OrchestrationServiceImpl implements OrchestrationService
     String depZnodePath = null;
     String zookeeperHostport = null;
     
-    Map<String, String> serviceDataProperites;
-    Map<String, String> zNodeInfoProperites;
+    Map<String, String> serviceDataProperties;
+    Map<String, String> zNodeInfoProperties;
+    Map<String, String> kafkaProperties;
     
-    public void setServiceDataProperites(Map<String, String> properties)
+    public void setServiceDataProperties(Map<String, String> properties)
     {
-        this.serviceDataProperites = properties;
+        this.serviceDataProperties = properties;
     }
     
-    public Map<String, String> getServiceDataProperites()
+    public Map<String, String> getServiceDataProperties()
     {
-        return this.serviceDataProperites;
+        return this.serviceDataProperties;
     }
     
-    public void setZNodeInfoProperites(Map<String, String> properties)
+    public void setZNodeInfoProperties(Map<String, String> properties)
     {
-        this.zNodeInfoProperites = properties;
+        this.zNodeInfoProperties = properties;
     }
     
-    public Map<String, String> getZNodeInfoProperites()
+    public Map<String, String> getZNodeInfoProperties()
     {
-        return this.zNodeInfoProperites;
+        return this.zNodeInfoProperties;
+    }
+    
+    public void setKafkaProperties(Map<String, String> properties)
+    {
+        this.kafkaProperties = properties;
+    }
+    
+    public Map<String, String> getKafkaProperties()
+    {
+        return this.kafkaProperties;
     }
     
     /** 不用考虑线程竞争，因为其只在初始化时修改，其它时间是查询 */
@@ -105,6 +130,8 @@ public class OrchestrationServiceImpl implements OrchestrationService
     
     Watcher zkWatcher = new ZkWatcher();
     
+    KafkaMonitor kafkaMonitor = null;
+    
     public Map<String, Set<String>> getDependenceMap()
     {
         return this.dependenceMap;
@@ -128,17 +155,22 @@ public class OrchestrationServiceImpl implements OrchestrationService
         JSONObject dependenceObj = new JSONObject(dependences);
         buildDependenceMap(dependenceObj, dependenceMap);
         
-        String serviceName = serviceDataProperites.get(OrchestrationService.SERVICE_SERVICENAME);
-        String ip = serviceDataProperites.get(OrchestrationService.SERVICE_IP);
-        String portStr = serviceDataProperites.get(OrchestrationService.SERVICE_PORT);
+        String serviceName = serviceDataProperties.get(OrchestrationService.SERVICE_SERVICENAME);
+        String ip = serviceDataProperties.get(OrchestrationService.SERVICE_IP);
+        String portStr = serviceDataProperties.get(OrchestrationService.SERVICE_PORT);
         int port = Integer.parseInt(portStr);
-        String rootUrl = serviceDataProperites.get(OrchestrationService.SERVICE_ROOTURL);
+        String rootUrl = serviceDataProperties.get(OrchestrationService.SERVICE_ROOTURL);
         serviceData = new ZNodeServiceData(ip, serviceName, port, rootUrl);
         
-        regZnodePath = zNodeInfoProperites.get(OrchestrationService.ZNODE_REGPATH);
-        regZnodeChildPath = zNodeInfoProperites.get(OrchestrationService.ZNODE_REGCHILDPATH);
-        depZnodePath = zNodeInfoProperites.get(OrchestrationService.ZNODE_DEPPATH);
-        zookeeperHostport = zNodeInfoProperites.get(OrchestrationService.ZK_HOSTPORT);
+        regZnodePath = zNodeInfoProperties.get(OrchestrationService.ZNODE_REGPATH);
+        regZnodeChildPath = zNodeInfoProperties.get(OrchestrationService.ZNODE_REGCHILDPATH);
+        depZnodePath = zNodeInfoProperties.get(OrchestrationService.ZNODE_DEPPATH);
+        zookeeperHostport = zNodeInfoProperties.get(OrchestrationService.ZK_HOSTPORT);
+        
+        if (kafkaProperties != null)
+        {
+            kafkaMonitor = new KafkaMonitor(kafkaProperties);
+        }
     }
     
     @Override
@@ -207,8 +239,12 @@ public class OrchestrationServiceImpl implements OrchestrationService
         if (isRunning)
         {
             logger.info("Stop orchestration serivce ...");
-            
             isRunning = false;
+            //暂停kafka monitor
+            if (kafkaMonitor != null)
+            {
+                kafkaMonitor.stop();
+            }
             if (zookeeperThread != null)
             {
                 zookeeperThread.interrupt();
@@ -391,6 +427,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
             {
                 setUpZnodeForActive();
                 statue.set(CommonConstants.SERVICE_ACTIVE);
+                
             }
             else if(!ZkUtil.checkZnodeExist(zk, regZnodeChildPath))
             {
@@ -464,10 +501,11 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 logger.debug("Get zk event at standby mode: " + event.toString());
                 if(event.getType() == Watcher.Event.EventType.NodeChildrenChanged)
                 {
+                    //这里观察到regZnodeChildPath消失了，说明主Register down掉了
                     if (!ZkUtil.checkZnodeExist(zk, regZnodeChildPath))
                     {
                         statue.set(CommonConstants.SERVICE_ACTIVE);
-                        continue;
+                        return;
                     }
                 }
                 else if (event.getType() == Watcher.Event.EventType.None && event.getState() == Watcher.Event.KeeperState.SyncConnected)
@@ -523,8 +561,15 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 if(!data.equals(this.serviceData))
                 {
                     statue.set(CommonConstants.SERVICE_STANDBY);
+                    return;
                 }
             }
+            //开始kafkaMonitor
+            if (kafkaMonitor != null)
+            {
+                kafkaMonitor.start();
+            }
+            
             while(isRunning && statue.get() == CommonConstants.SERVICE_ACTIVE)
             {
                 WatchedEvent event = zookeeperEventQueue.poll(OrchestrationService.ZKEVENT_QUEUE_TIMEOUT, 
@@ -866,6 +911,203 @@ public class OrchestrationServiceImpl implements OrchestrationService
         if(!isRunning)
         {
             start();
+        }
+    }
+    
+    /**
+     * 
+     * 当kafka设备正常时，就创建一个kafka的child node，如果kafka异常了，就去掉该node.只有Active的Orchestration才会启动monitor的
+     * 
+     * @author yanbinwa
+     *
+     */
+    class KafkaMonitor implements Callback
+    {
+        String kafkaHostPort = null;
+        String monitorTopic = null;
+        String kafkaZnodeChildPath = null;
+        KafkaProducer<Object, Object> producer = null;
+        boolean isKafkaMonitorRunning = false;
+        boolean isTimeout = false;
+        Thread monitorThread = null;
+        ZNodeServiceData kafkaData = null;
+        
+        public KafkaMonitor(Map<String, String>kafkaProperites)
+        {
+            kafkaHostPort = kafkaProperites.get(OrchestrationService.KAFKA_HOSTPORT_KEY);
+            if (kafkaHostPort == null)
+            {
+                logger.error("Kafka host port should not be null");
+                return;
+            }
+            monitorTopic = kafkaProperites.get(OrchestrationService.KAFKA_TEST_TOPIC_KEY);
+            if (monitorTopic == null)
+            {
+                logger.error("Kafka monitor topic should not be null");
+                return;
+            }
+            kafkaZnodeChildPath = kafkaProperites.get(OrchestrationService.ZNODE_KAFKACHILDPATH);
+            if (kafkaZnodeChildPath == null)
+            {
+                logger.error("Kafka znode path should not be null");
+                return;
+            }
+            kafkaData = new ZNodeServiceData("kafkaIp", "kafka", -1, "kafkaUrl");
+        }
+        
+        public void start()
+        {
+            if (!isKafkaMonitorRunning)
+            {
+                isKafkaMonitorRunning = true;
+                buildKafkaProducer();
+                monitorThread = new Thread(new Runnable(){
+
+                    @Override
+                    public void run()
+                    {
+                        monitorKafka();
+                    }
+                    
+                });
+                monitorThread.start();
+            }
+            else
+            {
+                logger.info("kafka monitor has already started");
+            }
+        }
+        
+        private void monitorKafka()
+        {
+            logger.info("Start monitor kafka");
+            while(isKafkaMonitorRunning)
+            {
+                logger.trace("Try to send check msg ");
+                ProducerRecord<Object, Object> record = new ProducerRecord<Object, Object>(monitorTopic, "Check msg");
+                producer.send(record, this);
+                //连接错误，需要重连
+                if (isTimeout)
+                {
+                    //这里说明kafka出现问题，删除Kafka的node
+                    producer.close();
+                    producer = null;
+                    try
+                    {
+                        if (ZkUtil.checkZnodeExist(zk, kafkaZnodeChildPath))
+                        {
+                            ZkUtil.deleteZnode(zk, kafkaZnodeChildPath);
+                            logger.info("Delete kafka znode: " + kafkaZnodeChildPath);
+                        }
+                        Thread.sleep(OrchestrationService.KAFKA_PRODUCER_TIMEOUT_SLEEP);
+                    } 
+                    catch (InterruptedException e)
+                    {
+                        if(!isRunning)
+                        {
+                            logger.info("Close the kafka producer worker thread");
+                        }
+                        else
+                        {
+                            e.printStackTrace();
+                        }
+                    } 
+                    catch (KeeperException e)
+                    {
+                        e.printStackTrace();
+                    }
+                    buildKafkaProducer();
+                    continue;
+                }
+                else
+                {
+                    //这里要创建Kafka node，通知kafka已经上线了
+                    try
+                    {
+                        if (!ZkUtil.checkZnodeExist(zk, kafkaZnodeChildPath))
+                        {
+                            ZkUtil.createEphemeralZNode(zk, kafkaZnodeChildPath, kafkaData.createJsonObject());
+                            logger.info("Create kafka znode: " + kafkaZnodeChildPath);
+                        }
+                        Thread.sleep(OrchestrationService.KAFKA_PRODUCER_CHECK_INTERVAL);
+                    }
+                    catch (InterruptedException e)
+                    {
+                        if(!isRunning)
+                        {
+                            logger.info("Close the kafka producer worker thread");
+                        }
+                        else
+                        {
+                            e.printStackTrace();
+                        }
+                    } 
+                    catch (KeeperException e)
+                    {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }
+        
+        public void stop()
+        {
+            if (isKafkaMonitorRunning)
+            {
+                isKafkaMonitorRunning = false;
+                monitorThread.interrupt();
+                try
+                {
+                    if (ZkUtil.checkZnodeExist(zk, kafkaZnodeChildPath))
+                    {
+                        ZkUtil.deleteZnode(zk, kafkaZnodeChildPath);
+                    }
+                } 
+                catch (KeeperException e)
+                {
+                    e.printStackTrace();
+                } 
+                catch (InterruptedException e)
+                {
+                    e.printStackTrace();
+                }
+            }
+            else
+            {
+                logger.info("kafka monitor has already stopped");
+            }
+        }
+
+        private void buildKafkaProducer()
+        {
+            Properties props = new Properties();
+            props.put("bootstrap.servers", kafkaHostPort);
+            props.put("acks", "all");
+            props.put("retries", 0);
+            props.put("batch.size", 200);
+            props.put("linger.ms", 1);
+            props.put("buffer.memory", 10000);
+            props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            props.put("max.block.ms", 5000);
+            
+            producer = new KafkaProducer<Object, Object>(props);
+        }
+        
+        
+        @Override
+        public void onCompletion(RecordMetadata metadata, Exception exception)
+        {
+            logger.trace("Metadata: " + metadata);
+            if (exception instanceof TimeoutException)
+            {
+                isTimeout = true;
+                logger.error("Exception: " + exception);
+            }
+            else
+            {
+                isTimeout = false;
+            }
         }
     }
 }

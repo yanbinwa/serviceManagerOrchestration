@@ -24,6 +24,12 @@ public interface OrchestrationService extends InitializingBean, ServiceLifeCycle
     public static final int ZKNODE_REGCHILDPATH_WAITTIME = 1000;
     public static final int ZK_WAIT_INTERVAL = 10 * 1000;
     
+    public static final String KAFKA_HOSTPORT_KEY = "kafkaHostPort";
+    public static final String KAFKA_TEST_TOPIC_KEY = "testTopic";
+    public static final String ZNODE_KAFKACHILDPATH = "kafkaZnodeChildPath";
+    public static final int KAFKA_PRODUCER_TIMEOUT_SLEEP = 15 * 1000;
+    public static final int KAFKA_PRODUCER_CHECK_INTERVAL = 15 * 1000;
+    
     JSONObject getReadyService() throws ServiceUnavailableException;
     
     boolean isServiceReady(String serviceName) throws ServiceUnavailableException;

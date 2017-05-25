@@ -1,15 +1,19 @@
 orchestration :
-    dependences : "{\"ServiceC\":[],\"ServiceB\":[\"ServiceC\"],\"ServiceA\":[\"ServiceC\",\"ServiceB\"]}"
-    serviceDataProperites:
+    dependences : "{\"kafka\":[], \"ServiceC\":[\"kafka\"],\"ServiceB\":[\"ServiceC\", \"kafka\"],\"ServiceA\":[\"ServiceC\",\"ServiceB\", \"kafka\"]}"
+    serviceDataProperties:
         serviceName : "orchestration"
         ip : "localhost"
         port : 8080
         rootUrl : "/iOrchestration"
-    zNodeInfoProperites:
+    zNodeInfoProperties:
         regZnodePath : "/regManageNode"
         regZnodeChildPath : "/regManageNode/regManageChildNode"
         depZnodePath : "/depManageNode"
         zookeeperHostport : "192.168.56.17:2181"
+    kafkaProperties:
+        kafkaHostPort : "192.168.56.17:9092,192.168.56.18:9092"
+        testTopic: "orchestrationTest"
+        kafkaZnodeChildPath : "/regManageNode/kafka"
         
 tomcatPort : 8080
 
