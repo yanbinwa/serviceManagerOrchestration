@@ -1,5 +1,5 @@
 orchestration :
-    dependences : "{\"kafka\":[], \"ServiceC\":[\"kafka\"],\"ServiceB\":[\"ServiceC\", \"kafka\"],\"ServiceA\":[\"ServiceC\",\"ServiceB\", \"kafka\"]}"
+    dependences : "{\"kafka\":[], \"cache\":[\"kafka\"],\"collection\":[\"cache\", \"kafka\"]}"
     serviceDataProperties:
         serviceName : "orchestration"
         ip : "localhost"
