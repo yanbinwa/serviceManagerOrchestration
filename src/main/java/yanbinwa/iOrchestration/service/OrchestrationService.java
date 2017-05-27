@@ -16,6 +16,7 @@ public interface OrchestrationService extends InitializingBean, ServiceLifeCycle
     public static final int ZKEVENT_QUEUE_TIMEOUT = 5000;
     
     public static final String SERVICE_IP = "ip";
+    public static final String SERVICE_SERVICEGROUPNAME = "serviceGroupName";
     public static final String SERVICE_SERVICENAME = "serviceName";
     public static final String SERVICE_PORT = "port";
     public static final String SERVICE_ROOTURL = "rootUrl";

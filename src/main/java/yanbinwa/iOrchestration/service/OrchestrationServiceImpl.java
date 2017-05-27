@@ -32,6 +32,8 @@ import org.springframework.stereotype.Service;
 
 import yanbinwa.common.constants.CommonConstants;
 import yanbinwa.common.utils.ZkUtil;
+import yanbinwa.common.zNodedata.ZNodeData;
+import yanbinwa.common.zNodedata.ZNodeDataUtil;
 import yanbinwa.common.zNodedata.ZNodeDependenceData;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
@@ -39,6 +41,9 @@ import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
 /**
  * 
  * orchestration还要监听kafka的状态，因为kafka也是一个重要的依赖
+ * 
+ * orchestration的依赖是通过servicegroup来确定的，是servicegroup之前的依赖，而不是特定service之间的依赖
+ * 这里要做到所有servicegroup都可以伸缩
  * 
  * @author yanbinwa
  *
@@ -97,17 +102,17 @@ public class OrchestrationServiceImpl implements OrchestrationService
         return this.kafkaProperties;
     }
     
-    /** 不用考虑线程竞争，因为其只在初始化时修改，其它时间是查询 */
+    /** 不用考虑线程竞争，因为其只在初始化时修改，其它时间是查询，这里是servicegroup的依赖关系 */
     Map<String, Set<String>> dependenceMap = new HashMap<String, Set<String>>(); 
     
-    /** 一个服务有多个实例，所以是list，key为servicename，value为该种service的信息，有多个实例，所以是copyOnWrite */
-    Map<String, Set<ZNodeServiceData>> onLineServiceData = new HashMap<String, Set<ZNodeServiceData>>();
+    /** 一个服务有多个实例，所以是list，key为servicgroup，value为该种servicegroup的信息，有多个实例，所以是copyOnWrite */
+    Map<String, Set<String>> onLineServiceGroupToServiceNameSetMap = new HashMap<String, Set<String>>();
     
     /** key为znode的name，value为serviceData, copyOnWrite */
-    Map<String, ZNodeServiceData> createdZnodeToServiceName = new HashMap<String, ZNodeServiceData>();
+    Map<String, ZNodeData> onLineServiceNameToServiceDataMap = new HashMap<String, ZNodeData>();
     
     /** 已经上线的服务， 需要考虑线程竞争，使用copyOnWirte */
-    Set<String> readyService = new HashSet<String>();
+    Set<String> readyServiceGroupSet = new HashSet<String>();
     
     /** copyOnWrite lock */
     ReentrantLock lock = new ReentrantLock();
@@ -155,12 +160,13 @@ public class OrchestrationServiceImpl implements OrchestrationService
         JSONObject dependenceObj = new JSONObject(dependences);
         buildDependenceMap(dependenceObj, dependenceMap);
         
+        String serviceGroup = serviceDataProperties.get(OrchestrationService.SERVICE_SERVICEGROUPNAME);
         String serviceName = serviceDataProperties.get(OrchestrationService.SERVICE_SERVICENAME);
         String ip = serviceDataProperties.get(OrchestrationService.SERVICE_IP);
         String portStr = serviceDataProperties.get(OrchestrationService.SERVICE_PORT);
         int port = Integer.parseInt(portStr);
         String rootUrl = serviceDataProperties.get(OrchestrationService.SERVICE_ROOTURL);
-        serviceData = new ZNodeServiceData(ip, serviceName, port, rootUrl);
+        serviceData = new ZNodeServiceData(ip, serviceGroup, serviceName, port, rootUrl);
         
         regZnodePath = zNodeInfoProperties.get(OrchestrationService.ZNODE_REGPATH);
         regZnodeChildPath = zNodeInfoProperties.get(OrchestrationService.ZNODE_REGCHILDPATH);
@@ -181,17 +187,19 @@ public class OrchestrationServiceImpl implements OrchestrationService
             throw new ServiceUnavailableException();
         }
         JSONObject retObj = new JSONObject();
-        for(String service : readyService)
+        for(String servicegroup : readyServiceGroupSet)
         {
-            Map<String, Set<ZNodeServiceData>> serviceDataMap = new HashMap<String, Set<ZNodeServiceData>>();
-            Set<String> dependenceService = dependenceMap.get(service);
-            for(String serviceName : dependenceService)
+            JSONObject serviceGroup = new JSONObject();
+            JSONArray instanceList = new JSONArray();
+            Set<String> onLineInstanceSet = onLineServiceGroupToServiceNameSetMap.get(servicegroup);
+            for(String instanceName : onLineInstanceSet)
             {
-                Set<ZNodeServiceData> serviceDataSet = onLineServiceData.get(serviceName);
-                serviceDataMap.put(serviceName, serviceDataSet);
+                instanceList.put(onLineServiceNameToServiceDataMap.get(instanceName).createJsonObject());
             }
-            ZNodeDependenceData zNodeDependenceData = new ZNodeDependenceData(serviceDataMap);
-            retObj.put(service, zNodeDependenceData.createJsonObject());
+            serviceGroup.put("instance list", instanceList);            
+            ZNodeDependenceData zNodeDependenceData = getDependencyData(servicegroup);
+            serviceGroup.put("dependece list", zNodeDependenceData.createJsonObject());
+            retObj.put(servicegroup, serviceGroup);
         }
         return retObj;
     }
@@ -256,9 +264,9 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 zookeeperSync = null;
             }
             statue.set(CommonConstants.SERVICE_STANDBY);
-            onLineServiceData = new HashMap<String, Set<ZNodeServiceData>>();
-            createdZnodeToServiceName = new HashMap<String, ZNodeServiceData>();
-            readyService = new HashSet<String>();
+            onLineServiceGroupToServiceNameSetMap = new HashMap<String, Set<String>>();
+            onLineServiceNameToServiceDataMap = new HashMap<String, ZNodeData>();
+            readyServiceGroupSet = new HashSet<String>();
         }
         else
         {
@@ -611,9 +619,9 @@ public class OrchestrationServiceImpl implements OrchestrationService
                     }
                 }
                 statue.set(CommonConstants.SERVICE_STANDBY);
-                onLineServiceData = new HashMap<String, Set<ZNodeServiceData>>();
-                createdZnodeToServiceName = new HashMap<String, ZNodeServiceData>();
-                readyService = new HashSet<String>();
+                onLineServiceGroupToServiceNameSetMap.clear();
+                onLineServiceNameToServiceDataMap.clear();
+                readyServiceGroupSet.clear();
                 zk = ZkUtil.connectToZk(zookeeperHostport, zkWatcher);
                 if (zk == null)
                 {
@@ -651,13 +659,13 @@ public class OrchestrationServiceImpl implements OrchestrationService
         List<String> childList = ZkUtil.getChildren(zk, path);
         logger.debug("Get current children list: " + childList);
         
-        Map<String, ZNodeServiceData> addZNodeMap = new HashMap<String, ZNodeServiceData>();
+        Map<String, ZNodeData> addZNodeMap = new HashMap<String, ZNodeData>();
         Set<String> delZNodeSet = new HashSet<String>();
         for(String childNode : childList)
         {
+            //childNode即为serviceName，排除register子node
             String childPath = getRegZnodePathForChildNode(childNode);
-            //排除register子node
-            if(!createdZnodeToServiceName.containsKey(childNode) && !childPath.equals(regZnodeChildPath))
+            if(!onLineServiceNameToServiceDataMap.containsKey(childNode) && !childPath.equals(regZnodeChildPath))
             {
                 JSONObject data = null;
                 try
@@ -679,10 +687,11 @@ public class OrchestrationServiceImpl implements OrchestrationService
                     }
                 }
                 logger.info("Add a new childnode: " + childNode + "; data is: " + data);
-                addZNodeMap.put(childNode, new ZNodeServiceData(data));
+                ZNodeData zNodeData = ZNodeDataUtil.getZnodeData(data);
+                addZNodeMap.put(childNode, zNodeData);
             }
         }
-        for(String childNode : createdZnodeToServiceName.keySet())
+        for(String childNode : onLineServiceNameToServiceDataMap.keySet())
         {
             if(!childList.contains(childNode))
             {
@@ -698,77 +707,79 @@ public class OrchestrationServiceImpl implements OrchestrationService
     }
     
     //会计算出readyService的副本，根据副本与原来的差异来创建或者删除dependence znode
-    private void updateReadyService(Map<String, ZNodeServiceData> addZNodeMap, Set<String> delZNodeSet) throws KeeperException, InterruptedException
+    private void updateReadyService(Map<String, ZNodeData> addZNodeMap, Set<String> delZNodeSet) throws KeeperException, InterruptedException
     {
         copyOnWriteForMap(addZNodeMap, delZNodeSet);
         updateReadyService();
     }
     
-    private void copyOnWriteForMap(Map<String, ZNodeServiceData> addZNodeMap, Set<String> delZNodeSet)
+    private void copyOnWriteForMap(Map<String, ZNodeData> addZNodeMap, Set<String> delZNodeSet)
     {
-        Map<String, Set<ZNodeServiceData>> onLineServiceDataCopy = new HashMap<String, Set<ZNodeServiceData>>(onLineServiceData);
-        for(Map.Entry<String, ZNodeServiceData> entry : addZNodeMap.entrySet())
-        {
-            ZNodeServiceData value = entry.getValue();
-            String serviceName = value.getServiceName();
-            Set<ZNodeServiceData> serviceInfoSet = onLineServiceDataCopy.get(serviceName);
-            if(serviceInfoSet == null)
-            {
-                serviceInfoSet = new HashSet<ZNodeServiceData>();
-                logger.info("Service is on line: " + serviceName);
-                onLineServiceDataCopy.put(serviceName, serviceInfoSet);
-            }
-            if(serviceInfoSet.contains(value))
-            {
-                logger.error("Should not contain the ZNodeServiceData: " + value.toString());
-                continue;
-            }
-            logger.info("Service instance is on line: " + value.toString());
-            serviceInfoSet.add(value);
-        }
-        for(String childNode : delZNodeSet)
-        {
-            if(!createdZnodeToServiceName.containsKey(childNode))
-            {
-                logger.error("CreatedZnodeToService should contain the znode: " + childNode);
-                continue;
-            }
-            ZNodeServiceData value = createdZnodeToServiceName.get(childNode);
-            String serviceName = value.getServiceName();
-            if(!onLineServiceDataCopy.containsKey(serviceName))
-            {
-                logger.error("OnLineServiceData should contain the service: " + serviceName + "; The znode is: " + childNode);
-                continue;
-            }
-            Set<ZNodeServiceData> serviceInfoSet = onLineServiceDataCopy.get(serviceName);
-            
-            if(!serviceInfoSet.contains(value))
-            {
-                logger.error("Should contain the ZNodeServiceData: " + value.toString());
-                continue;
-            }
-            logger.info("Service instance is off line: " + value.toString());
-            serviceInfoSet.remove(value);
-            if(serviceInfoSet.size() == 0)
-            {
-                logger.info("Service is off line: " + serviceName);
-                onLineServiceDataCopy.remove(serviceName);
-            }
-        }
-        
-        Map<String, ZNodeServiceData> createdZnodeToServiceNameCopy = new HashMap<String, ZNodeServiceData>(createdZnodeToServiceName);
-        createdZnodeToServiceNameCopy.putAll(addZNodeMap);
-        for(String childNode : delZNodeSet)
-        {
-            createdZnodeToServiceNameCopy.remove(childNode);
-        }
-        
         //copy on write
         lock.lock();
         try
         {
-            onLineServiceData = onLineServiceDataCopy;
-            createdZnodeToServiceName = createdZnodeToServiceNameCopy;
+            Map<String, Set<String>> onLineServiceGroupToServiceNameSetMapCopy = new HashMap<String, Set<String>>(onLineServiceGroupToServiceNameSetMap);
+            for(Map.Entry<String, ZNodeData> entry : addZNodeMap.entrySet())
+            {
+                ZNodeData value = entry.getValue();
+                String serviceGroupName = value.getServiceGroupName();
+                String serviceName = value.getServiceName();
+                Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMap.get(serviceGroupName);
+                if(serviceNameSet == null)
+                {
+                    serviceNameSet = new HashSet<String>();
+                    logger.info("ServiceGroup is on line: " + serviceGroupName);
+                    onLineServiceGroupToServiceNameSetMapCopy.put(serviceGroupName, serviceNameSet);
+                }
+                if(serviceNameSet.contains(serviceName))
+                {
+                    logger.error("Should not contain the ZNodeServiceData: " + value.toString());
+                    continue;
+                }
+                logger.info("Service instance is on line: " + value.toString());
+                serviceNameSet.add(serviceName);
+            }
+            for(String childNode : delZNodeSet)
+            {
+                ZNodeData value = onLineServiceNameToServiceDataMap.get(childNode);
+                if (value == null)
+                {
+                    logger.error("Should not contain the ZNodeServiceData: " + childNode);
+                    continue;
+                }
+                String serviceGroupName = value.getServiceGroupName();
+                String serviceName = value.getServiceName();
+                if(!onLineServiceGroupToServiceNameSetMap.containsKey(childNode))
+                {
+                    logger.error("CreatedZnodeToService should contain the serviceGroup: " + serviceGroupName + "; The znode is: " + value);
+                    continue;
+                }
+                Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMapCopy.get(serviceGroupName);
+                
+                if(!serviceNameSet.contains(serviceName))
+                {
+                    logger.error("Should contain the ZNodeServiceData: " + value.toString());
+                    continue;
+                }
+                logger.info("Service instance is off line: " + value.toString());
+                serviceNameSet.remove(serviceName);
+                if(serviceNameSet.size() == 0)
+                {
+                    logger.info("Service group is off line: " + serviceGroupName);
+                    onLineServiceGroupToServiceNameSetMapCopy.remove(serviceGroupName);
+                }
+            }
+            
+            Map<String, ZNodeData> createdZnodeToServiceNameCopy = new HashMap<String, ZNodeData>(onLineServiceNameToServiceDataMap);
+            createdZnodeToServiceNameCopy.putAll(addZNodeMap);
+            for(String childNode : delZNodeSet)
+            {
+                createdZnodeToServiceNameCopy.remove(childNode);
+            }
+        
+            onLineServiceGroupToServiceNameSetMap = onLineServiceGroupToServiceNameSetMapCopy;
+            onLineServiceNameToServiceDataMap = createdZnodeToServiceNameCopy;
         }
         finally
         {
@@ -778,83 +789,76 @@ public class OrchestrationServiceImpl implements OrchestrationService
     
     private void updateReadyService() throws KeeperException, InterruptedException
     {
-        Set<String> readyServiceCopy = new HashSet<String>();
-        Set<String> onLineServiceSet = onLineServiceData.keySet();
-        for(Map.Entry<String, Set<String>> entry : dependenceMap.entrySet())
-        {
-            boolean isReday = true;
-            for(String needService : entry.getValue())
-            {
-                if(!onLineServiceSet.contains(needService))
-                {
-                    isReday = false;
-                }
-            }
-            //不仅要保证其依赖online，同时自己也必须online
-            if (isReday && onLineServiceSet.contains(entry.getKey()))
-            {
-                readyServiceCopy.add(entry.getKey());
-            }
-        }
-        Set<String> addReadyService = new HashSet<String>();
-        Set<String> delReadyService = new HashSet<String>();
         
-        for(String serviceName : readyServiceCopy)
-        {
-            if(!readyService.contains(serviceName))
-            {
-                addReadyService.add(serviceName);
-            }
-        }
-        
-        for(String serviceName : readyService)
-        {
-            if(!readyServiceCopy.contains(serviceName))
-            {
-                delReadyService.add(serviceName);
-            }
-        }
-        
+        Set<String> addReadyServiceGroup = new HashSet<String>();
+        Set<String> delReadyServiceGroup = new HashSet<String>();
         //copy on write
         lock.lock();
         try
         {
-            readyService = readyServiceCopy;
+            Set<String> readyServiceGroupSetCopy = new HashSet<String>();
+            Set<String> onLineServiceGroupSet = onLineServiceGroupToServiceNameSetMap.keySet();
+            for(Map.Entry<String, Set<String>> entry : dependenceMap.entrySet())
+            {
+                boolean isReday = true;
+                for(String needServiceGroup : entry.getValue())
+                {
+                    if(!onLineServiceGroupSet.contains(needServiceGroup))
+                    {
+                        isReday = false;
+                    }
+                }
+                //不仅要保证其依赖online，同时自己也必须online
+                if (isReday && onLineServiceGroupSet.contains(entry.getKey()))
+                {
+                    readyServiceGroupSetCopy.add(entry.getKey());
+                }
+            }
+            
+            for(String serviceGroupName : readyServiceGroupSetCopy)
+            {
+                if(!readyServiceGroupSet.contains(serviceGroupName))
+                {
+                    addReadyServiceGroup.add(serviceGroupName);
+                }
+            }
+            
+            for(String serviceGroupName : readyServiceGroupSet)
+            {
+                if(!readyServiceGroupSetCopy.contains(serviceGroupName))
+                {
+                    delReadyServiceGroup.add(serviceGroupName);
+                }
+            }
+            readyServiceGroupSet = readyServiceGroupSetCopy;
         }
         finally
         {
             lock.unlock();
         }
-        if(!addReadyService.isEmpty() || !delReadyService.isEmpty())
+        if(!addReadyServiceGroup.isEmpty() || !delReadyServiceGroup.isEmpty())
         {
-            updateDependenceZnode(addReadyService, delReadyService);
+            updateDependenceZnode(addReadyServiceGroup, delReadyServiceGroup);
         }
     }
     
-    private void updateDependenceZnode(Set<String> addReadyService, Set<String> delReadyService) throws KeeperException, InterruptedException
+    private void updateDependenceZnode(Set<String> addReadyServiceGroup, Set<String> delReadyServiceGroup) throws KeeperException, InterruptedException
     {
-        for(String service : addReadyService)
+        for(String serviceGroup : addReadyServiceGroup)
         {
-            String path = this.depZnodePath + "/" + service;
+            String path = this.depZnodePath + "/" + serviceGroup;
             if(ZkUtil.checkZnodeExist(zk, path))
             {
                 logger.error("Dependence child node should not be exist: " + path);
                 continue;
             }
-            Map<String, Set<ZNodeServiceData>> serviceDataMap = new HashMap<String, Set<ZNodeServiceData>>();
-            Set<String> dependenceService = dependenceMap.get(service);
-            for(String serviceName : dependenceService)
-            {
-                Set<ZNodeServiceData> serviceDataSet = onLineServiceData.get(serviceName);
-                serviceDataMap.put(serviceName, serviceDataSet);
-            }
-            ZNodeDependenceData zNodeDependenceData = new ZNodeDependenceData(serviceDataMap);
+            ZNodeDependenceData zNodeDependenceData = getDependencyData(serviceGroup);
             ZkUtil.createEphemeralZNode(zk, path, zNodeDependenceData.createJsonObject());
         }
         
-        for(String service : delReadyService)
+        for(String serviceGroup : delReadyServiceGroup)
         {
-            String path = this.depZnodePath + "/" + service;
+            String path = this.depZnodePath + "/" + serviceGroup;
             if(!ZkUtil.checkZnodeExist(zk, path))
             {
                 logger.error("Dependence child should be exist: " + path);
@@ -862,6 +866,23 @@ public class OrchestrationServiceImpl implements OrchestrationService
             }
             ZkUtil.deleteZnode(zk, path);
         }
+    }
+    
+    private ZNodeDependenceData getDependencyData(String serviceGroup)
+    {
+        Map<String, Set<ZNodeData>> serviceDataMap = new HashMap<String, Set<ZNodeData>>();
+        Set<String> dependenceServiceGroupSet = dependenceMap.get(serviceGroup);
+        for(String dependenceServiceGroup : dependenceServiceGroupSet)
+        {
+            Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMap.get(dependenceServiceGroup);
+            Set<ZNodeData> serviceDataSet = new HashSet<ZNodeData>();
+            for(String serviceName : serviceNameSet)
+            {
+                serviceDataSet.add(onLineServiceNameToServiceDataMap.get(serviceName));
+            }
+            serviceDataMap.put(dependenceServiceGroup, serviceDataSet);
+        }
+        return new ZNodeDependenceData(serviceDataMap);
     }
     
     private String getRegZnodePathForChildNode(String childNode)
@@ -876,7 +897,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
         {
             throw new ServiceUnavailableException();
         }
-        return readyService.contains(serviceName);
+        return readyServiceGroupSet.contains(serviceName);
     }
 
     @Override
@@ -952,7 +973,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 logger.error("Kafka znode path should not be null");
                 return;
             }
-            kafkaData = new ZNodeServiceData("kafkaIp", "kafka", -1, "kafkaUrl");
+            kafkaData = new ZNodeServiceData("kafkaIp", "kafka", "kafka", -1, "kafkaUrl");
         }
         
         public void start()

@@ -1,7 +1,8 @@
 orchestration :
     dependences : "{\"kafka\":[], \"cache\":[\"kafka\"],\"collection\":[\"cache\", \"kafka\"]}"
     serviceDataProperties:
-        serviceName : "orchestration"
+        serviceGroupName : "orchestration"
+        serviceName : "orchestration_1"
         ip : "localhost"
         port : 8080
         rootUrl : "/iOrchestration"
