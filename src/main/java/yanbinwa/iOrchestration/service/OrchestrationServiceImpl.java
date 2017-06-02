@@ -186,6 +186,9 @@ public class OrchestrationServiceImpl implements OrchestrationService
         {
             throw new ServiceUnavailableException();
         }
+        logger.info("readyServiceGroupSet is: " + readyServiceGroupSet);
+        logger.info("onLineServiceGroupToServiceNameSetMap is: " + onLineServiceGroupToServiceNameSetMap);
+        logger.info("onLineServiceNameToServiceDataMap is: " + onLineServiceNameToServiceDataMap);
         JSONObject retObj = new JSONObject();
         for(String servicegroup : readyServiceGroupSet)
         {
@@ -657,7 +660,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
         String path = parentPath;
         //获取到的是相对路径，或znode的名称，例如node10000000000
         List<String> childList = ZkUtil.getChildren(zk, path);
-        logger.debug("Get current children list: " + childList);
+        logger.trace("Get current children list: " + childList);
         
         Map<String, ZNodeData> addZNodeMap = new HashMap<String, ZNodeData>();
         Set<String> delZNodeSet = new HashSet<String>();
@@ -720,12 +723,13 @@ public class OrchestrationServiceImpl implements OrchestrationService
         try
         {
             Map<String, Set<String>> onLineServiceGroupToServiceNameSetMapCopy = new HashMap<String, Set<String>>(onLineServiceGroupToServiceNameSetMap);
+            Map<String, ZNodeData> onLineServiceNameToServiceDataMapCopy = new HashMap<String, ZNodeData>(onLineServiceNameToServiceDataMap);
             for(Map.Entry<String, ZNodeData> entry : addZNodeMap.entrySet())
             {
                 ZNodeData value = entry.getValue();
                 String serviceGroupName = value.getServiceGroupName();
                 String serviceName = value.getServiceName();
-                Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMap.get(serviceGroupName);
+                Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMapCopy.get(serviceGroupName);
                 if(serviceNameSet == null)
                 {
                     serviceNameSet = new HashSet<String>();
@@ -734,15 +738,16 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 }
                 if(serviceNameSet.contains(serviceName))
                 {
-                    logger.error("Should not contain the ZNodeServiceData: " + value.toString());
+                    logger.error("Should not contain the service: " + serviceName + "The data info is: " + value.toString());
                     continue;
                 }
                 logger.info("Service instance is on line: " + value.toString());
                 serviceNameSet.add(serviceName);
+                logger.trace("serviceNameSet is: " + serviceNameSet);
             }
             for(String childNode : delZNodeSet)
             {
-                ZNodeData value = onLineServiceNameToServiceDataMap.get(childNode);
+                ZNodeData value = onLineServiceNameToServiceDataMapCopy.get(childNode);
                 if (value == null)
                 {
                     logger.error("Should not contain the ZNodeServiceData: " + childNode);
@@ -750,7 +755,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 }
                 String serviceGroupName = value.getServiceGroupName();
                 String serviceName = value.getServiceName();
-                if(!onLineServiceGroupToServiceNameSetMap.containsKey(childNode))
+                if(!onLineServiceGroupToServiceNameSetMapCopy.containsKey(serviceGroupName))
                 {
                     logger.error("CreatedZnodeToService should contain the serviceGroup: " + serviceGroupName + "; The znode is: " + value);
                     continue;
@@ -771,15 +776,14 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 }
             }
             
-            Map<String, ZNodeData> createdZnodeToServiceNameCopy = new HashMap<String, ZNodeData>(onLineServiceNameToServiceDataMap);
-            createdZnodeToServiceNameCopy.putAll(addZNodeMap);
+            onLineServiceNameToServiceDataMapCopy.putAll(addZNodeMap);
             for(String childNode : delZNodeSet)
             {
-                createdZnodeToServiceNameCopy.remove(childNode);
+                onLineServiceNameToServiceDataMapCopy.remove(childNode);
             }
         
             onLineServiceGroupToServiceNameSetMap = onLineServiceGroupToServiceNameSetMapCopy;
-            onLineServiceNameToServiceDataMap = createdZnodeToServiceNameCopy;
+            onLineServiceNameToServiceDataMap = onLineServiceNameToServiceDataMapCopy;
         }
         finally
         {
@@ -820,6 +824,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 if(!readyServiceGroupSet.contains(serviceGroupName))
                 {
                     addReadyServiceGroup.add(serviceGroupName);
+                    logger.trace("Add ready service group: " + serviceGroupName);
                 }
             }
             
@@ -828,6 +833,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 if(!readyServiceGroupSetCopy.contains(serviceGroupName))
                 {
                     delReadyServiceGroup.add(serviceGroupName);
+                    logger.trace("Delete ready service group: " + serviceGroupName);
                 }
             }
             readyServiceGroupSet = readyServiceGroupSetCopy;
