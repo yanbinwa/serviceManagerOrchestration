@@ -1,0 +1,503 @@
+package yanbinwa.iOrchestration.management;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.locks.ReentrantLock;
+
+import org.apache.log4j.Logger;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import yanbinwa.common.constants.CommonConstants;
+import yanbinwa.common.zNodedata.ZNodeServiceData;
+import yanbinwa.common.zNodedata.ZNodeServiceDataWithKafkaTopicImpl;
+
+/**
+ * 
+ * 管理topic与
+ * 
+ * @author yanbinwa
+ *
+ */
+
+public class KafkaTopicManagementImpl implements KafkaTopicManagement
+{
+    
+    private static final Logger logger = Logger.getLogger(KafkaTopicManagementImpl.class);
+    
+    Map<String, Integer> topicGroupToPartitionNumMap = new HashMap<String, Integer>();
+    /* consumer topic group to consumer topic */
+    Map<String, Set<String>> topicGroupToTopicMap = new HashMap<String, Set<String>>();
+    /* consumer topic to partitionKey */
+    Map<String, Set<Integer>> topicToPartitionKeyMap = new HashMap<String, Set<Integer>>();
+    /* producer service group to topic group */
+    Map<String, Set<String>> serviceGroupToTopicGroupMap = new HashMap<String, Set<String>>();
+    /** copyOnWrite lock */
+    ReentrantLock lock = new ReentrantLock();
+    
+    public KafkaTopicManagementImpl(JSONObject kafkaTopicInfo)
+    {
+        buildTopicGroupToPartitionNumMap(kafkaTopicInfo);
+    }
+    
+    /**
+     * 
+     * 这里只是维护了所有online service的kafka topic情况，但是不保证这写service是否已经ready了，所以要在dependence service处理
+     * 
+     */
+    @Override
+    public void updataKafkaTopicMapping(Map<String, ZNodeServiceData> addZNodeMap, Map<String, ZNodeServiceData> delZNodeMap)
+    {
+        Map<String, Set<String>> addTopicGroupToTopicMap = new HashMap<String, Set<String>>();
+        for(Map.Entry<String, ZNodeServiceData> entry : addZNodeMap.entrySet())
+        {
+            ZNodeServiceData zNodeServiceData = entry.getValue();
+            if (zNodeServiceData == null)
+            {
+                continue;
+            }
+            updateServiceGroupToTopicGroupMap(zNodeServiceData);
+            if (!(zNodeServiceData instanceof ZNodeServiceDataWithKafkaTopicImpl))
+            {
+                continue;
+            }
+            ZNodeServiceDataWithKafkaTopicImpl zNodeServiceDataWithKafkaTopic = (ZNodeServiceDataWithKafkaTopicImpl) zNodeServiceData;
+            String topicInfoStr = zNodeServiceDataWithKafkaTopic.getTopicInfo();
+            JSONObject topicInfoObj = new JSONObject(topicInfoStr);
+            if (topicInfoObj.has(CommonConstants.KAFKA_CONSUMERS_KEY))
+            {
+                JSONObject consumersInfoObj = topicInfoObj.getJSONObject(CommonConstants.KAFKA_CONSUMERS_KEY);
+                for(Object topicGroupObj : consumersInfoObj.keySet())
+                {
+                    if (! (topicGroupObj instanceof String))
+                    {
+                        logger.error("consumersInfoObj key should be String " + topicGroupObj);
+                        continue;
+                    }
+                    String topicGroupName = (String) topicGroupObj;
+                    JSONArray topicList = consumersInfoObj.getJSONArray(topicGroupName);
+                    Set<String> addTopicSet = addTopicGroupToTopicMap.get(topicGroupName);
+                    if (addTopicSet == null)
+                    {
+                        addTopicSet = new HashSet<String>();
+                        addTopicGroupToTopicMap.put(topicGroupName, addTopicSet);
+                    }
+                    for(int i = 0; i < topicList.length(); i ++)
+                    {
+                        addTopicSet.add(topicList.getString(i));
+                    }
+                }
+            }
+        }
+        Map<String, Set<String>> delTopicGroupToTopicMap = new HashMap<String, Set<String>>();        
+        for(Map.Entry<String, ZNodeServiceData> entry : delZNodeMap.entrySet())
+        {
+            ZNodeServiceData zNodeServiceData = entry.getValue();
+            if (zNodeServiceData == null)
+            {
+                continue;
+            }
+            updateServiceGroupToTopicGroupMap(zNodeServiceData);
+            if (!(zNodeServiceData instanceof ZNodeServiceDataWithKafkaTopicImpl))
+            {
+                continue;
+            }
+            ZNodeServiceDataWithKafkaTopicImpl zNodeServiceDataWithKafkaTopic = (ZNodeServiceDataWithKafkaTopicImpl) zNodeServiceData;
+            String topicInfoStr = zNodeServiceDataWithKafkaTopic.getTopicInfo();
+            JSONObject topicInfoObj = new JSONObject(topicInfoStr);
+            if (topicInfoObj.has(CommonConstants.KAFKA_CONSUMERS_KEY))
+            {
+                JSONObject consumersInfoObj = topicInfoObj.getJSONObject(CommonConstants.KAFKA_CONSUMERS_KEY);
+                for(Object topicGroupObj : consumersInfoObj.keySet())
+                {
+                    if (! (topicGroupObj instanceof String))
+                    {
+                        logger.error("consumersInfoObj key should be String " + topicGroupObj);
+                        continue;
+                    }
+                    String topicGroupName = (String) topicGroupObj;
+                    JSONArray topicList = consumersInfoObj.getJSONArray(topicGroupName);
+                    Set<String> delTopicSet = delTopicGroupToTopicMap.get(topicGroupName);
+                    if (delTopicSet == null)
+                    {
+                        delTopicSet = new HashSet<String>();
+                        delTopicGroupToTopicMap.put(topicGroupName, delTopicSet);
+                    }
+                    for(int i = 0; i < topicList.length(); i ++)
+                    {
+                        delTopicSet.add(topicList.getString(i));
+                    }
+                }
+            }
+        }  
+        if (!addTopicGroupToTopicMap.isEmpty() || !delTopicGroupToTopicMap.isEmpty())
+        {
+            logger.info("addTopicGroupToTopicMap is: " + addTopicGroupToTopicMap + "; delTopicGroupToTopicMap is " + delTopicGroupToTopicMap);
+            updateTopicToPartitionKeyMap(addTopicGroupToTopicMap, delTopicGroupToTopicMap);
+        }
+    }
+    
+    @Override
+    public Map<String, Map<String, Set<Integer>>> getTopicGroupToTopicToPartitionKeyMappingByServiceGroup(String serviceGroup)
+    {
+        if (serviceGroup == null)
+        {
+            logger.error("topicGroup set should not be null");
+            return null;
+        }
+        Set<String> topicGroupSet = serviceGroupToTopicGroupMap.get(serviceGroup);
+        if (topicGroupSet == null)
+        {
+            return null;
+        }
+        
+        Map<String, Map<String, Set<Integer>>> topicGroupToTopicToPartitionKeyMapping = new HashMap<String, Map<String, Set<Integer>>>();
+        for(String topicGroup : topicGroupSet)
+        {
+            if(topicGroupToTopicMap.containsKey(topicGroup))
+            {
+                Set<String> topicSet = topicGroupToTopicMap.get(topicGroup);
+                if (topicSet == null || topicSet.isEmpty())
+                {
+                    logger.error("topicToPartitionKeyMapping should not be null or empty for topic group " + topicGroup);
+                    continue;
+                }
+                Map<String, Set<Integer>> topicToPartitionKeyMapping = new HashMap<String, Set<Integer>>();
+                for(String topic : topicSet)
+                {
+                    Set<Integer> partitionKeySet = topicToPartitionKeyMap.get(topic);
+                    if (partitionKeySet == null || partitionKeySet.isEmpty())
+                    {
+                        logger.error("partitionKeySet should not be empty for topic " + topic);
+                        continue;
+                    }
+                    topicToPartitionKeyMapping.put(topic, partitionKeySet);
+                }
+                topicGroupToTopicToPartitionKeyMapping.put(topicGroup, topicToPartitionKeyMapping);
+            }
+        }
+        return topicGroupToTopicToPartitionKeyMapping;
+    }
+
+    @Override
+    public void reset()
+    {
+        topicGroupToTopicMap.clear();
+        topicToPartitionKeyMap.clear();
+    }
+    
+    private void buildTopicGroupToPartitionNumMap(JSONObject kafkaTopicInfo)
+    {
+        if (kafkaTopicInfo == null)
+        {
+            logger.error("kafkaTopicInfo should not be null");
+            return;
+        }
+        topicGroupToPartitionNumMap.clear();
+        for(Object topicGroupObj : kafkaTopicInfo.keySet())
+        {
+            if (! (topicGroupObj instanceof String))
+            {
+                logger.error("kafkaTopicInfo key should be String " + topicGroupObj);
+            }
+            String topicGroup = (String)topicGroupObj;
+            Integer partitionNum = kafkaTopicInfo.getInt(topicGroup);
+            topicGroupToPartitionNumMap.put(topicGroup, partitionNum);
+        }
+    }
+    
+    private void updateTopicToPartitionKeyMap(Map<String, Set<String>> addTopicGroupToTopicMap, Map<String, Set<String>> delTopicGroupToTopicMap)
+    {
+        Set<String> changeTopicGroupSet = new HashSet<String>();
+        changeTopicGroupSet.addAll(addTopicGroupToTopicMap.keySet());
+        changeTopicGroupSet.addAll(delTopicGroupToTopicMap.keySet());
+        lock.lock();
+        try
+        {
+            Map<String, Set<String>> topicGroupToTopicMapCopy = new HashMap<String, Set<String>>(topicGroupToTopicMap);
+            Map<String, Set<Integer>> topicToPartitionKeyMapCopy = new HashMap<String, Set<Integer>>(topicToPartitionKeyMap);
+            for(String topicGroup : changeTopicGroupSet)
+            {
+                Set<String> addTopicSet = addTopicGroupToTopicMap.get(topicGroup);
+                if (addTopicSet == null)
+                {
+                    addTopicSet = new HashSet<String>();
+                }
+                Set<String> delTopicSet = delTopicGroupToTopicMap.get(topicGroup);
+                if (delTopicSet == null)
+                {
+                    delTopicSet = new HashSet<String>();
+                }
+                logger.info("topic group is " + topicGroup + "; "
+                          + "addTopicSet is " + addTopicSet + "; "
+                          + "topicGroupToTopicMapCopy is + " + topicGroupToTopicMapCopy + "; "
+                          + "topicToPartitionKeyMapCopy is" + topicToPartitionKeyMapCopy); 
+                updateTopicToPartitionKeyMap(topicGroup, addTopicSet, delTopicSet, topicGroupToTopicMapCopy, topicToPartitionKeyMapCopy);
+            }
+            topicGroupToTopicMap = topicGroupToTopicMapCopy;
+            topicToPartitionKeyMap = topicToPartitionKeyMapCopy;
+        }
+        finally
+        {
+            lock.unlock();
+        }
+    }
+    
+    private void updateTopicToPartitionKeyMap(String topicGroupName, Set<String> addTopicSet, Set<String> delTopicSet, 
+                    Map<String, Set<String>> topicGroupToTopicMapCopy, Map<String, Set<Integer>> topicToPartitionKeyMapCopy)
+    {
+        Set<String> curTopicSet = topicGroupToTopicMapCopy.get(topicGroupName);
+        if (curTopicSet == null)
+        {
+            curTopicSet = new HashSet<String>();
+            topicGroupToTopicMapCopy.put(topicGroupName, curTopicSet);
+            logger.info("Add topic group: " + topicGroupName);
+        }
+        int totleTopicNum = curTopicSet.size() + addTopicSet.size() - delTopicSet.size();
+        if (totleTopicNum < 0)
+        {
+            logger.error("Topic num for topic gourp: " + topicGroupName + " is less than 0; The cur, add and del list is "
+                    + curTopicSet + "; " + addTopicSet + "; " + delTopicSet);
+            topicGroupToTopicMapCopy.remove(topicGroupName);
+            for (String topic : curTopicSet)
+            {
+                topicToPartitionKeyMapCopy.remove(topic);
+            }
+            return;
+        }
+        else if (totleTopicNum == 0)
+        {
+            logger.info("Remove topic group: " + topicGroupName);
+            topicGroupToTopicMapCopy.remove(topicGroupName);
+            for (String topic : curTopicSet)
+            {
+                topicToPartitionKeyMapCopy.remove(topic);
+            }
+            return;
+        }
+        
+        /**
+         * 先将添加的和删除的partition互换一下，其余的不动，这样之后就只剩下多出的topic或者减少的topic
+         */
+        int exchangeTopicNum = Math.min(addTopicSet.size(), delTopicSet.size());
+        List<String> addTopicList = new ArrayList<String>(addTopicSet);
+        List<String> delTopicList = new ArrayList<String>(delTopicSet);
+        for(int i = 0; i < exchangeTopicNum; i ++)
+        {
+            String addTopic = addTopicList.get(i);
+            String delTopic = delTopicList.get(i);
+            Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(delTopic);
+            if (partitionKeySet == null)
+            {
+                logger.info("Delete topic partitionList should not be empty");
+                continue;
+            }
+            topicToPartitionKeyMapCopy.remove(delTopic);
+            topicToPartitionKeyMapCopy.put(addTopic, partitionKeySet);
+            
+            addTopicSet.remove(addTopic);
+            delTopicSet.remove(delTopic);
+            curTopicSet.add(addTopic);
+            curTopicSet.remove(delTopic);
+        }
+        if (addTopicSet.size() > 0)
+        {
+            addTopicToTopicToPartitionMap(topicGroupName, addTopicSet, topicGroupToTopicMapCopy, topicToPartitionKeyMapCopy);
+        }
+        else if (delTopicSet.size() > 0)
+        {
+            delTopicToTopicToPartitionMap(topicGroupName, delTopicSet, topicGroupToTopicMapCopy, topicToPartitionKeyMapCopy);
+        }
+    }
+    
+    private void addTopicToTopicToPartitionMap(String topicGroupName, Set<String> addTopicSet, 
+                    Map<String, Set<String>> topicGroupToTopicMapCopy, Map<String, Set<Integer>> topicToPartitionKeyMapCopy)
+    {
+        Set<String> curTopicList =  topicGroupToTopicMapCopy.get(topicGroupName);
+        if (curTopicList == null)
+        {
+            logger.error("AddTopicToTopicToPartitionMap: Should never come to here");
+            return;
+        }
+        List<Integer> avaliablePartitionKey = new ArrayList<Integer>();
+        int partitionNum = getPartitionNumByTopicGroup(topicGroupName);
+        int totleTopicNum = curTopicList.size() + addTopicSet.size();
+        int partitionNumForEachTopic = partitionNum / totleTopicNum;
+        int needMigratePartitionNum = partitionNumForEachTopic * addTopicSet.size();
+        if (curTopicList.size() == 0)
+        {
+            logger.info("Build topic to partitionKey for topic group: " + topicGroupName);
+            for (int i = 0; i < partitionNum; i ++)
+            {
+                avaliablePartitionKey.add(i);
+            }
+        }
+        else
+        {
+            if (totleTopicNum > partitionNum)
+            {
+                logger.info("The topic num: " + totleTopicNum + " is larger than the partitionNum: " + partitionNum);
+            }
+            int migratePartitionNum = 0;
+            while(migratePartitionNum < needMigratePartitionNum)
+            {
+                for(String topic : curTopicList)
+                {
+                    Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(topic);
+                    List<Integer> partitionKeyList = new ArrayList<Integer>(partitionKeySet);
+                    if (partitionKeyList.size() > partitionNumForEachTopic)
+                    {
+                        int partitionKey = partitionKeyList.get(0);
+                        partitionKeyList.remove(0);
+                        partitionKeySet.remove(partitionKeySet);
+                        avaliablePartitionKey.add(partitionKey);
+                        logger.trace("Migrate the partitionKey: " + partitionKey + " from topic: " + topic);
+                        migratePartitionNum ++;
+                        if (migratePartitionNum >= needMigratePartitionNum)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        for(String topic : addTopicSet)
+        {
+            for(int i = 0; i < partitionNumForEachTopic; i ++)
+            {   
+                int partitionKey = avaliablePartitionKey.get(0);
+                avaliablePartitionKey.remove(0);
+                logger.trace("Migrate the partitionKey: " + partitionKey + " to topic: " + topic);
+                Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(topic);
+                if (partitionKeySet == null)
+                {
+                    partitionKeySet = new HashSet<Integer>();
+                    topicToPartitionKeyMapCopy.put(topic, partitionKeySet);
+                }
+                partitionKeySet.add(partitionKey);
+            }
+            curTopicList.add(topic);
+        }
+    }
+    
+    private void delTopicToTopicToPartitionMap(String topicGroupName, Set<String> delTopicSet, 
+                    Map<String, Set<String>> topicGroupToTopicMapCopy, Map<String, Set<Integer>> topicToPartitionKeyMapCopy)
+    {
+        Set<String> curTopicSet = topicGroupToTopicMapCopy.get(topicGroupName);
+        List<Integer> avaliablePartitionKey = new ArrayList<Integer>();
+        for(String topic : delTopicSet)
+        {
+            Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(topic);
+            if (partitionKeySet == null)
+            {
+                logger.error("Exist topic partition key list should not be null for topic " + topic);
+                continue;
+            }
+            for (int partitionKey : partitionKeySet)
+            {
+                avaliablePartitionKey.add(partitionKey);
+                logger.trace("Remove partitionKey: " + partitionKey + " from topic: " + topic);
+            }
+            topicToPartitionKeyMapCopy.remove(topic);
+            curTopicSet.remove(topic);
+        }
+        
+        if (curTopicSet.size() == 0)
+        {
+            logger.info("There is no topic in producer " + topicGroupName);
+            topicGroupToTopicMapCopy.remove(topicGroupName);
+            return;
+        }
+        int totleTopicNum = curTopicSet.size();
+        int partitionNum = getPartitionNumByTopicGroup(topicGroupName);
+        int partitionNumForEachTopic = partitionNum / totleTopicNum;
+        //先保证每个topic有partitionNumForEachTopic个partition
+        for(String topic : curTopicSet)
+        {
+            Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(topic);
+            int leastAddNum = partitionNumForEachTopic - partitionKeySet.size();
+            for(int i = 0; i < leastAddNum; i ++)
+            {
+                int partitionKey = avaliablePartitionKey.get(0);
+                avaliablePartitionKey.remove(0);
+                partitionKeySet.add(partitionKey);
+                logger.info("Add partition key: " + partitionKey + " to topic: " + topic);
+            }
+        }
+        //将多余的partitionkey再分到某些topic上
+        for(String topic : curTopicSet)
+        {
+            if (avaliablePartitionKey.size() > 0)
+            {
+                int partitionKey = avaliablePartitionKey.get(0);
+                avaliablePartitionKey.remove(0);
+                Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(topic);
+                partitionKeySet.add(partitionKey);
+                logger.info("Add partition key: " + partitionKey + " to topic: " + topic);
+            }
+        }
+    }
+    
+    private int getPartitionNumByTopicGroup(String topicGroup)
+    {
+        Integer partitionNum = topicGroupToPartitionNumMap.get(topicGroup);
+        if (partitionNum == null)
+        {
+            partitionNum = CommonConstants.KAFKA_DEFAULT_PARTITION_NUM;
+        }
+        return partitionNum;
+    }
+    
+    private void updateServiceGroupToTopicGroupMap(ZNodeServiceData zNodeServiceData)
+    {
+        if (zNodeServiceData == null)
+        {
+            return;
+        }
+        lock.lock();
+        try
+        {
+            Set<String> topicGroupSet = getTopicGroupSetByZNodeServiceData(zNodeServiceData);
+            String serviceGroupName = zNodeServiceData.getServiceGroupName();
+            if (topicGroupSet == null)
+            {
+                serviceGroupToTopicGroupMap.remove(serviceGroupName);
+            }
+            else
+            {
+                serviceGroupToTopicGroupMap.put(serviceGroupName, topicGroupSet);
+            }
+        }
+        finally
+        {
+            lock.unlock();
+        }
+    }
+    
+    private Set<String> getTopicGroupSetByZNodeServiceData(ZNodeServiceData zNodeServiceData)
+    {
+        if (zNodeServiceData == null || !(zNodeServiceData instanceof ZNodeServiceDataWithKafkaTopicImpl))
+        {
+            return null;
+        }
+        ZNodeServiceDataWithKafkaTopicImpl zNodeServiceDataWithKafkaTopic = (ZNodeServiceDataWithKafkaTopicImpl) zNodeServiceData;
+        String topicInfoStr = zNodeServiceDataWithKafkaTopic.getTopicInfo();
+        JSONObject topicInfoObj = new JSONObject(topicInfoStr);
+        if (!topicInfoObj.has(CommonConstants.KAFKA_PRODUCERS_KEY))
+        {
+            return null;
+        }
+        Set<String> topicGroupSet = new HashSet<String>();
+        JSONArray topicGroupSetObj = topicInfoObj.getJSONArray(CommonConstants.KAFKA_PRODUCERS_KEY);
+        for(int i = 0; i < topicGroupSetObj.length(); i ++)
+        {
+            topicGroupSet.add(topicGroupSetObj.getString(i));
+        }
+        return topicGroupSet;
+    }
+
+}
