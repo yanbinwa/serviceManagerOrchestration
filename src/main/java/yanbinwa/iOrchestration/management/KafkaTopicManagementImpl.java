@@ -317,6 +317,11 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
     private void addTopicToTopicToPartitionMap(String topicGroupName, Set<String> addTopicSet, 
                     Map<String, Set<String>> topicGroupToTopicMapCopy, Map<String, Set<Integer>> topicToPartitionKeyMapCopy)
     {
+        logger.info("addTopicToTopicToPartitionMap topicGroupName: " + topicGroupName
+                 + " addTopicSet: " + addTopicSet
+                 + " topicGroupToTopicMapCopy: " + topicGroupToTopicMapCopy
+                 + " topicToPartitionKeyMapCopy" + topicToPartitionKeyMapCopy);
+        
         Set<String> curTopicList =  topicGroupToTopicMapCopy.get(topicGroupName);
         if (curTopicList == null)
         {
@@ -328,6 +333,11 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
         int totleTopicNum = curTopicList.size() + addTopicSet.size();
         int partitionNumForEachTopic = partitionNum / totleTopicNum;
         int needMigratePartitionNum = partitionNumForEachTopic * addTopicSet.size();
+        logger.info("partitionNum is: " + partitionNum
+                 + " totleTopicNum is " + totleTopicNum
+                 + " partitionNumForEachTopic is: " + partitionNumForEachTopic
+                 + " needMigratePartitionNum is: " + needMigratePartitionNum);
+        
         if (curTopicList.size() == 0)
         {
             logger.info("Build topic to partitionKey for topic group: " + topicGroupName);
@@ -353,9 +363,9 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
                     {
                         int partitionKey = partitionKeyList.get(0);
                         partitionKeyList.remove(0);
-                        partitionKeySet.remove(partitionKeySet);
+                        partitionKeySet.remove(partitionKey);
                         avaliablePartitionKey.add(partitionKey);
-                        logger.trace("Migrate the partitionKey: " + partitionKey + " from topic: " + topic);
+                        logger.info("Migrate the partitionKey: " + partitionKey + " from topic: " + topic);
                         migratePartitionNum ++;
                         if (migratePartitionNum >= needMigratePartitionNum)
                         {
@@ -365,13 +375,14 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
                 }
             }
         }
+        logger.info("avaliablePartitionKey is: " + avaliablePartitionKey);
         for(String topic : addTopicSet)
         {
             for(int i = 0; i < partitionNumForEachTopic; i ++)
             {   
                 int partitionKey = avaliablePartitionKey.get(0);
                 avaliablePartitionKey.remove(0);
-                logger.trace("Migrate the partitionKey: " + partitionKey + " to topic: " + topic);
+                logger.info("Migrate the partitionKey: " + partitionKey + " to topic: " + topic);
                 Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(topic);
                 if (partitionKeySet == null)
                 {
@@ -387,6 +398,11 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
     private void delTopicToTopicToPartitionMap(String topicGroupName, Set<String> delTopicSet, 
                     Map<String, Set<String>> topicGroupToTopicMapCopy, Map<String, Set<Integer>> topicToPartitionKeyMapCopy)
     {
+        logger.info("addTopicToTopicToPartitionMap topicGroupName: " + topicGroupName
+                + "addTopicSet: " + delTopicSet
+                + "topicGroupToTopicMapCopy: " + topicGroupToTopicMapCopy
+                + "topicToPartitionKeyMapCopy" + topicToPartitionKeyMapCopy);
+        
         Set<String> curTopicSet = topicGroupToTopicMapCopy.get(topicGroupName);
         List<Integer> avaliablePartitionKey = new ArrayList<Integer>();
         for(String topic : delTopicSet)

@@ -13,7 +13,8 @@ import org.apache.zookeeper.KeeperException;
 
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 import yanbinwa.common.zNodedata.ZNodeServiceDataImpl;
-import yanbinwa.iOrchestration.service.IOrchestrationService;
+import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
+import yanbinwa.iOrchestration.service.OrchestrationService;
 
 public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
 {
@@ -27,31 +28,31 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
     ZNodeServiceData kafkaData = null;
     boolean isRunning = false;
     
-    IOrchestrationService orchestrationService = null;
+    OrchestrationService orchestrationService = null;
     
-    public KafkaMonitorManagementImpl(Map<String, String> kafkaProperites, IOrchestrationService orchestrationService)
+    public KafkaMonitorManagementImpl(Map<String, String> kafkaProperites, OrchestrationService orchestrationService)
     {
         this.orchestrationService = orchestrationService;
         
-        kafkaHostPort = kafkaProperites.get(IOrchestrationService.KAFKA_HOSTPORT_KEY);
+        kafkaHostPort = kafkaProperites.get(OrchestrationService.KAFKA_HOSTPORT_KEY);
         if (kafkaHostPort == null)
         {
             logger.error("Kafka host port should not be null");
             return;
         }
-        monitorTopic = kafkaProperites.get(IOrchestrationService.KAFKA_TEST_TOPIC_KEY);
+        monitorTopic = kafkaProperites.get(OrchestrationService.KAFKA_TEST_TOPIC_KEY);
         if (monitorTopic == null)
         {
             logger.error("Kafka monitor topic should not be null");
             return;
         }
-        String serviceGroupName = kafkaProperites.get(IOrchestrationService.SERVICE_SERVICEGROUPNAME);
+        String serviceGroupName = kafkaProperites.get(OrchestrationService.SERVICE_SERVICEGROUPNAME);
         if (serviceGroupName == null)
         {
             logger.error("Kafka service group name should not be null");
             return;
         }
-        String serviceName = kafkaProperites.get(IOrchestrationService.SERVICE_SERVICENAME);
+        String serviceName = kafkaProperites.get(OrchestrationService.SERVICE_SERVICENAME);
         if (serviceName == null)
         {
             logger.error("Kafka service name should not be null");
@@ -102,6 +103,11 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
             catch (InterruptedException e)
             {
                 e.printStackTrace();
+            } 
+            catch (ServiceUnavailableException e)
+            {
+                logger.info("orchestrationService is stop");
+                return;
             }
         }
         else
@@ -136,7 +142,7 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
         props.put("buffer.memory", 10000);
         props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
         props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-        props.put("max.block.ms", 10000);
+        props.put("max.block.ms", 3000);
         
         producer = new KafkaProducer<Object, Object>(props);
     }
@@ -158,7 +164,7 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
                 try
                 {
                     deleteKafkaRegZNode();
-                    Thread.sleep(IOrchestrationService.KAFKA_PRODUCER_TIMEOUT_SLEEP);
+                    Thread.sleep(OrchestrationService.KAFKA_PRODUCER_TIMEOUT_SLEEP);
                 } 
                 catch (InterruptedException e)
                 {
@@ -174,6 +180,11 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
                 catch (KeeperException e)
                 {
                     e.printStackTrace();
+                } 
+                catch (ServiceUnavailableException e)
+                {
+                    logger.info("orchestrationService is stop");
+                    return;
                 }
                 buildKafkaProducer();
                 continue;
@@ -184,7 +195,7 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
                 try
                 {
                     createKafkaRegZNode();
-                    Thread.sleep(IOrchestrationService.KAFKA_PRODUCER_CHECK_INTERVAL);
+                    Thread.sleep(OrchestrationService.KAFKA_PRODUCER_CHECK_INTERVAL);
                 }
                 catch (InterruptedException e)
                 {
@@ -200,12 +211,17 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
                 catch (KeeperException e)
                 {
                     e.printStackTrace();
+                } 
+                catch (ServiceUnavailableException e)
+                {
+                    logger.info("orchestrationService is stop");
+                    return;
                 }
             }
         }
     }
     
-    private void createKafkaRegZNode() throws KeeperException, InterruptedException
+    private void createKafkaRegZNode() throws KeeperException, InterruptedException, ServiceUnavailableException
     {
         if (!orchestrationService.isRegZnodeExist(kafkaData.getServiceName()))
         {
@@ -214,7 +230,7 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
         }
     }
     
-    private void deleteKafkaRegZNode() throws KeeperException, InterruptedException
+    private void deleteKafkaRegZNode() throws KeeperException, InterruptedException, ServiceUnavailableException
     {
         if (orchestrationService.isRegZnodeExist(kafkaData.getServiceName()))
         {

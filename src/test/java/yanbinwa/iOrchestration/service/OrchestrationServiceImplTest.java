@@ -1,10 +1,5 @@
 package yanbinwa.iOrchestration.service;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Map;
-import java.util.Set;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
@@ -15,36 +10,38 @@ public class OrchestrationServiceImplTest
     @Test
     public void test()
     {
-        Map<String, Set<String>> dependenceMap = new HashMap<String, Set<String>>();
-        Set<String> dependenceForA = new HashSet<String>();
-        dependenceForA.add("ServiceB");
-        dependenceForA.add("ServiceC");
-        dependenceMap.put("ServiceA", dependenceForA);
+        JSONObject rootObj = new JSONObject();
         
-        Set<String> dependenceForB = new HashSet<String>();
-        dependenceForB.add("ServiceC");
-        dependenceMap.put("ServiceB", dependenceForB);
+        JSONObject serviceDependenceObj = new JSONObject();
         
-        Set<String> dependenceForC = new HashSet<String>();
-        dependenceMap.put("ServiceC", dependenceForC);
-
-        JSONObject ret = new JSONObject();
-        for(Map.Entry<String, Set<String>> entry : dependenceMap.entrySet())
-        {
-            String key = entry.getKey();
-            boolean hasKey = ret.has(key);
-            if(!hasKey)
-            {
-                JSONArray tmp = new JSONArray();
-                ret.put(key, tmp);
-            }
-            JSONArray array = ret.getJSONArray(key);
-            for(String serviceName : entry.getValue())
-            {
-                array.put(serviceName);
-            }
-        }
-        System.out.println(ret.toString());
+        JSONArray kafkaArray = new JSONArray();
+        serviceDependenceObj.put("kafka", kafkaArray);
+        
+        JSONArray cacheArray = new JSONArray();
+        cacheArray.put("kafka");
+        serviceDependenceObj.put("cache", cacheArray);
+        
+        JSONArray collectionArray = new JSONArray();
+        collectionArray.put("kafka");
+        collectionArray.put("cache");
+        serviceDependenceObj.put("collection", collectionArray);
+        
+        rootObj.put("serviceDependency", serviceDependenceObj);
+        
+        JSONObject kafkaTopicInfoObj = new JSONObject();
+        kafkaTopicInfoObj.put("cacheTopic", 10);
+        
+        rootObj.put("kafkaTopicInfo", kafkaTopicInfoObj);
+        System.out.println(rootObj.toString());
+    }
+    
+    @Test
+    public void dependenceTest()
+    {
+        String dependenceStr = "{\"serviceDependency\":{\"cache\":[\"kafka\"],\"kafka\":[],\"collection\":[\"kafka\",\"cache\"]},\"kafkaTopicInfo\":{\"cacheTopic\":10}}";
+        JSONObject obj = new JSONObject(dependenceStr);
+        System.out.println(obj.toString());
+        
     }
 
 }

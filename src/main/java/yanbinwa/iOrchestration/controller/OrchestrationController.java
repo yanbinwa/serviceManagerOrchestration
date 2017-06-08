@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
-import yanbinwa.iOrchestration.service.IOrchestrationService;
+import yanbinwa.iOrchestration.service.OrchestrationService;
 
 @RestController
 @RequestMapping("/iOrchestration")
@@ -18,36 +18,36 @@ public class OrchestrationController
 {
     
     @Autowired
-    IOrchestrationService iOrchestrationService;
+    OrchestrationService orchestrationService;
     
     @RequestMapping(value="/getReadyService",method=RequestMethod.GET)
     public String getReadyService() throws ServiceUnavailableException 
     {
-        return iOrchestrationService.getReadyService().toString();
+        return orchestrationService.getReadyService().toString();
     }
     
     @RequestMapping(value="/isServiceReady",method=RequestMethod.GET)
     public boolean isServiceReady(@RequestParam("serviceName") String serviceName) throws ServiceUnavailableException
     {
-        return iOrchestrationService.isServiceReady(serviceName);
+        return orchestrationService.isServiceReady(serviceName);
     }
     
     @RequestMapping(value="/isActiveManageService",method=RequestMethod.GET)
     public boolean isActiveManageService() throws ServiceUnavailableException
     {
-        return iOrchestrationService.isActiveManageService();
+        return orchestrationService.isActiveManageService();
     }
     
     @RequestMapping(value="/startManageService",method=RequestMethod.POST)
     public void startManageService()
     {
-        iOrchestrationService.startManageService();
+        orchestrationService.startManageService();
     }
     
     @RequestMapping(value="/stopManageService",method=RequestMethod.POST)
     public void stopManageService()
     {
-        iOrchestrationService.stopManageService();
+        orchestrationService.stopManageService();
     }
     
     @ResponseStatus(value=HttpStatus.NOT_FOUND, reason="Orchestration service is stop")

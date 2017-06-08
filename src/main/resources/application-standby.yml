@@ -1,8 +1,8 @@
 orchestration :
-    dependences : "{\"kafka\":[], \"cache\":[\"kafka\"],\"collection\":[\"cache\", \"kafka\"]}"
-    serviceDataProperties:
+    dependencyProperties : "{\"serviceDependency\":{\"cache\":[\"kafka\"],\"kafka\":[],\"collection\":[\"kafka\",\"cache\"]},\"kafkaTopicInfo\":{\"cacheTopic\":10}}"
+    serviceDataProperties :
         serviceGroupName : "orchestration"
-        serviceName : "orchestration_1"
+        serviceName : "orchestration_2"
         ip : "172.18.0.22"
         port : 8092
         rootUrl : "/iOrchestration"
@@ -11,9 +11,11 @@ orchestration :
         regZnodeChildPath : "/regManageNode/regManageChildNode"
         depZnodePath : "/depManageNode"
         zookeeperHostport : "172.18.0.11:2191,172.18.0.12:2192,172.18.0.13:2193"
-    kafkaProperties:
-        kafkaHostPort : "172.18.0.41:9101,172.18.0.42:9102,172.18.0.43:9103"
-        testTopic: "orchestrationTest"
-        kafkaZnodeChildPath : "/regManageNode/kafka"
+    monitorProperties:
+        kafka:
+            serviceGroupName : "kafka"
+            serviceName : "kafka"
+            kafkaHostPort : "172.18.0.41:9101,172.18.0.42:9102,172.18.0.43:9103"
+            testTopic: "orchestrationTest"
 
 tomcatPort : 8092

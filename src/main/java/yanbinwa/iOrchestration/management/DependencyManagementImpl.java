@@ -15,8 +15,9 @@ import org.json.JSONObject;
 import yanbinwa.common.zNodedata.ZNodeDependenceData;
 import yanbinwa.common.zNodedata.ZNodeDependenceDataWithKafkaTopic;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
-import yanbinwa.iOrchestration.service.IOrchestrationService;
-import yanbinwa.iOrchestration.service.IOrchestrationServiceImpl;
+import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
+import yanbinwa.iOrchestration.service.OrchestrationService;
+import yanbinwa.iOrchestration.service.OrchestrationServiceImpl;
 
 public class DependencyManagementImpl implements DependencyManagement
 {
@@ -25,7 +26,7 @@ public class DependencyManagementImpl implements DependencyManagement
     
     private Map<String, Set<String>> serviceDependenceMap = new HashMap<String, Set<String>>(); 
     
-    IOrchestrationService orchestrationService = null;
+    OrchestrationService orchestrationService = null;
     
     /** 一个服务有多个实例，所以是list，key为servicgroup，value为该种servicegroup的信息，有多个实例，所以是copyOnWrite */
     Map<String, Set<String>> onLineServiceGroupToServiceNameSetMap = new HashMap<String, Set<String>>();
@@ -41,7 +42,7 @@ public class DependencyManagementImpl implements DependencyManagement
     
     KafkaTopicManagement kafkaTopicManagement = null;
     
-    public DependencyManagementImpl(IOrchestrationServiceImpl orchestrationServiceImpl, JSONObject dependencyProperties)
+    public DependencyManagementImpl(OrchestrationServiceImpl orchestrationServiceImpl, JSONObject dependencyProperties)
     {
         if (orchestrationServiceImpl == null)
         {
@@ -58,7 +59,7 @@ public class DependencyManagementImpl implements DependencyManagement
     }
 
     @Override
-    public void updateServiceDependence(List<String> currentServiceNameList) throws InterruptedException, KeeperException
+    public void updateServiceDependence(List<String> currentServiceNameList) throws InterruptedException, KeeperException, ServiceUnavailableException
     {
         Map<String, ZNodeServiceData> addZNodeMap = new HashMap<String, ZNodeServiceData>();
         Map<String, ZNodeServiceData> delZNodeMap = new HashMap<String, ZNodeServiceData>();
@@ -84,6 +85,11 @@ public class DependencyManagementImpl implements DependencyManagement
                         logger.error("Create register or dependence node fail " + e.getMessage());
                         throw e;
                     }
+                } 
+                catch (ServiceUnavailableException e)
+                {
+                    logger.info("orchestrationService is stop");
+                    return;
                 }
                 logger.info("Add a new service: " + serviceName + "; data is: " + data);
                 addZNodeMap.put(serviceName, data);
@@ -185,171 +191,189 @@ public class DependencyManagementImpl implements DependencyManagement
         }
     }
     
-    private void updateServiceDependence(Map<String, ZNodeServiceData> addZNodeMap, Map<String, ZNodeServiceData> delZNodeMap) throws KeeperException, InterruptedException
+    private void updateServiceDependence(Map<String, ZNodeServiceData> addZNodeMap, Map<String, ZNodeServiceData> delZNodeMap) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
         this.kafkaTopicManagement.updataKafkaTopicMapping(addZNodeMap, delZNodeMap);
-        Set<String> changedGroupSet = updataOnServiceGroupAndServiceMap(addZNodeMap, delZNodeMap);
-        if (changedGroupSet.size() > 0)
-        {
-            updateReadyServiceSet(changedGroupSet);
-        }
-    }
-    
-    private Set<String> updataOnServiceGroupAndServiceMap(Map<String, ZNodeServiceData> addZNodeMap, Map<String, ZNodeServiceData> delZNodeMap)
-    {
+        Map<String, Set<String>> changedServiceGroupsMap = null;
         lock.lock();
         try
         {
-            Map<String, Set<String>> onLineServiceGroupToServiceNameSetMapCopy = new HashMap<String, Set<String>>(onLineServiceGroupToServiceNameSetMap);
-            Map<String, ZNodeServiceData> onLineServiceNameToServiceDataMapCopy = new HashMap<String, ZNodeServiceData>(onLineServiceNameToServiceDataMap);
-            Set<String> changeGroupSet = new HashSet<String>();
-            for(Map.Entry<String, ZNodeServiceData> entry : addZNodeMap.entrySet())
+            Set<String> changedGroupSet = updataOnServiceGroupAndServiceMap(addZNodeMap, delZNodeMap);
+            if (changedGroupSet.size() == 0)
             {
-                ZNodeServiceData value = entry.getValue();
-                String serviceGroupName = value.getServiceGroupName();
-                String serviceName = value.getServiceName();
-                Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMapCopy.get(serviceGroupName);
-                if(serviceNameSet == null)
-                {
-                    serviceNameSet = new HashSet<String>();
-                    logger.info("ServiceGroup is on line: " + serviceGroupName);
-                    onLineServiceGroupToServiceNameSetMapCopy.put(serviceGroupName, serviceNameSet);
-                }
-                if(serviceNameSet.contains(serviceName))
-                {
-                    logger.error("Should not contain the service: " + serviceName + "The data info is: " + value.toString());
-                    continue;
-                }
-                logger.info("Service instance is on line: " + value.toString());
-                serviceNameSet.add(serviceName);
-                changeGroupSet.add(serviceGroupName);
-                logger.trace("serviceNameSet is: " + serviceNameSet);
+                return;
             }
-            for(Map.Entry<String, ZNodeServiceData> entry : delZNodeMap.entrySet())
-            {
-                String serviceName = entry.getKey();
-                ZNodeServiceData value = entry.getValue();
-                if (value == null)
-                {
-                    logger.error("Should not contain the ZNodeServiceData: " + serviceName);
-                    continue;
-                }
-                String serviceGroupName = value.getServiceGroupName();
-                if(!onLineServiceGroupToServiceNameSetMapCopy.containsKey(serviceGroupName))
-                {
-                    logger.error("CreatedZnodeToService should contain the serviceGroup: " + serviceGroupName + "; The znode is: " + value);
-                    continue;
-                }
-                Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMapCopy.get(serviceGroupName);
-                
-                if(!serviceNameSet.contains(serviceName))
-                {
-                    logger.error("Should contain the ZNodeServiceData: " + value.toString());
-                    continue;
-                }
-                logger.info("Service instance is off line: " + value.toString());
-                serviceNameSet.remove(serviceName);
-                changeGroupSet.add(serviceGroupName);
-                if(serviceNameSet.size() == 0)
-                {
-                    logger.info("Service group is off line: " + serviceGroupName);
-                    onLineServiceGroupToServiceNameSetMapCopy.remove(serviceGroupName);
-                }
-            }
-            
-            onLineServiceNameToServiceDataMapCopy.putAll(addZNodeMap);
-            for(String childNode : delZNodeMap.keySet())
-            {
-                onLineServiceNameToServiceDataMapCopy.remove(childNode);
-            }
-        
-            onLineServiceGroupToServiceNameSetMap = onLineServiceGroupToServiceNameSetMapCopy;
-            onLineServiceNameToServiceDataMap = onLineServiceNameToServiceDataMapCopy;
-            
-            return changeGroupSet;
+            changedServiceGroupsMap = updateReadyServiceSet();
         }
         finally
         {
             lock.unlock();
         }
+        
+        updateDependenceZnode(changedServiceGroupsMap);
+    }
+    
+    private Set<String> updataOnServiceGroupAndServiceMap(Map<String, ZNodeServiceData> addZNodeMap, Map<String, ZNodeServiceData> delZNodeMap)
+    {
+        Map<String, Set<String>> onLineServiceGroupToServiceNameSetMapCopy = new HashMap<String, Set<String>>(onLineServiceGroupToServiceNameSetMap);
+        Map<String, ZNodeServiceData> onLineServiceNameToServiceDataMapCopy = new HashMap<String, ZNodeServiceData>(onLineServiceNameToServiceDataMap);
+        Set<String> changeGroupSet = new HashSet<String>();
+        for(Map.Entry<String, ZNodeServiceData> entry : addZNodeMap.entrySet())
+        {
+            ZNodeServiceData value = entry.getValue();
+            String serviceGroupName = value.getServiceGroupName();
+            String serviceName = value.getServiceName();
+            Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMapCopy.get(serviceGroupName);
+            if(serviceNameSet == null)
+            {
+                serviceNameSet = new HashSet<String>();
+                logger.info("ServiceGroup is on line: " + serviceGroupName);
+                onLineServiceGroupToServiceNameSetMapCopy.put(serviceGroupName, serviceNameSet);
+            }
+            if(serviceNameSet.contains(serviceName))
+            {
+                logger.error("Should not contain the service: " + serviceName + "The data info is: " + value.toString());
+                continue;
+            }
+            logger.info("Service instance is on line: " + value.toString());
+            serviceNameSet.add(serviceName);
+            changeGroupSet.add(serviceGroupName);
+            logger.trace("serviceNameSet is: " + serviceNameSet);
+        }
+        for(Map.Entry<String, ZNodeServiceData> entry : delZNodeMap.entrySet())
+        {
+            String serviceName = entry.getKey();
+            ZNodeServiceData value = entry.getValue();
+            if (value == null)
+            {
+                logger.error("Should not contain the ZNodeServiceData: " + serviceName);
+                continue;
+            }
+            String serviceGroupName = value.getServiceGroupName();
+            if(!onLineServiceGroupToServiceNameSetMapCopy.containsKey(serviceGroupName))
+            {
+                logger.error("CreatedZnodeToService should contain the serviceGroup: " + serviceGroupName + "; The znode is: " + value);
+                continue;
+            }
+            Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMapCopy.get(serviceGroupName);
+            
+            if(!serviceNameSet.contains(serviceName))
+            {
+                logger.error("Should contain the ZNodeServiceData: " + value.toString());
+                continue;
+            }
+            logger.info("Service instance is off line: " + value.toString());
+            serviceNameSet.remove(serviceName);
+            changeGroupSet.add(serviceGroupName);
+            if(serviceNameSet.size() == 0)
+            {
+                logger.info("Service group is off line: " + serviceGroupName);
+                onLineServiceGroupToServiceNameSetMapCopy.remove(serviceGroupName);
+            }
+        }
+        
+        onLineServiceNameToServiceDataMapCopy.putAll(addZNodeMap);
+        for(String childNode : delZNodeMap.keySet())
+        {
+            onLineServiceNameToServiceDataMapCopy.remove(childNode);
+        }
+    
+        onLineServiceGroupToServiceNameSetMap = onLineServiceGroupToServiceNameSetMapCopy;
+        onLineServiceNameToServiceDataMap = onLineServiceNameToServiceDataMapCopy;
+        
+        return changeGroupSet;
     }
     
     /**
      * 这里不仅要有添加和删除的情况，还要有更新的情况，比如一个group中新加了一个service，那么该group所对应的zNode中的数据也要更新
      * 
+     * 返回需要更新的元素，包括add，change和delete
+     * 
      * @throws KeeperException
      * @throws InterruptedException
+     * @throws ServiceUnavailableException 
      */
-    private void updateReadyServiceSet(Set<String> changedGroupSet) throws KeeperException, InterruptedException
+    private Map<String, Set<String>> updateReadyServiceSet() throws KeeperException, InterruptedException, ServiceUnavailableException
     {
         Set<String> addReadyServiceGroup = new HashSet<String>();
         Set<String> delReadyServiceGroup = new HashSet<String>();
         //copy on write
-        lock.lock();
-        try
+        Set<String> readyServiceGroupSetCopy = new HashSet<String>();
+        Set<String> onLineServiceGroupSet = onLineServiceGroupToServiceNameSetMap.keySet();
+        for(Map.Entry<String, Set<String>> entry : serviceDependenceMap.entrySet())
         {
-            Set<String> readyServiceGroupSetCopy = new HashSet<String>();
-            Set<String> onLineServiceGroupSet = onLineServiceGroupToServiceNameSetMap.keySet();
-            for(Map.Entry<String, Set<String>> entry : serviceDependenceMap.entrySet())
+            boolean isReday = true;
+            for(String needServiceGroup : entry.getValue())
             {
-                boolean isReday = true;
-                for(String needServiceGroup : entry.getValue())
+                if(!onLineServiceGroupSet.contains(needServiceGroup))
                 {
-                    if(!onLineServiceGroupSet.contains(needServiceGroup))
-                    {
-                        isReday = false;
-                    }
-                }
-                //不仅要保证其依赖online，同时自己也必须online
-                if (isReday && onLineServiceGroupSet.contains(entry.getKey()))
-                {
-                    readyServiceGroupSetCopy.add(entry.getKey());
+                    isReday = false;
                 }
             }
-            
-            for(String serviceGroupName : readyServiceGroupSetCopy)
+            //不仅要保证其依赖online，同时自己也必须online
+            if (isReday && onLineServiceGroupSet.contains(entry.getKey()))
             {
-                if(!readyServiceGroupSet.contains(serviceGroupName))
-                {
-                    addReadyServiceGroup.add(serviceGroupName);
-                    logger.trace("Add ready service group: " + serviceGroupName);
-                }
+                readyServiceGroupSetCopy.add(entry.getKey());
             }
-            
-            for(String serviceGroupName : readyServiceGroupSet)
-            {
-                if(!readyServiceGroupSetCopy.contains(serviceGroupName))
-                {
-                    delReadyServiceGroup.add(serviceGroupName);
-                    logger.trace("Delete ready service group: " + serviceGroupName);
-                }
-            }
-            readyServiceGroupSet = readyServiceGroupSetCopy;
         }
-        finally
+        
+        for(String serviceGroupName : readyServiceGroupSetCopy)
         {
-            lock.unlock();
+            if(!readyServiceGroupSet.contains(serviceGroupName))
+            {
+                addReadyServiceGroup.add(serviceGroupName);
+                logger.trace("Add ready service group: " + serviceGroupName);
+            }
         }
+        
+        for(String serviceGroupName : readyServiceGroupSet)
+        {
+            if(!readyServiceGroupSetCopy.contains(serviceGroupName))
+            {
+                delReadyServiceGroup.add(serviceGroupName);
+                logger.trace("Delete ready service group: " + serviceGroupName);
+            }
+        }
+        readyServiceGroupSet = readyServiceGroupSetCopy;
+
+        // 这里处理add service group 外，均为change
+        Set<String> changeReadyServiceGroup = new HashSet<String>(readyServiceGroupSet);
         for (String serviceGroup : addReadyServiceGroup)
         {
-            if (!changedGroupSet.contains(serviceGroup))
-            {
-                logger.error("Change group set should containe add service " + serviceGroup);
-            }
-            changedGroupSet.remove(serviceGroup);
+            changeReadyServiceGroup.remove(serviceGroup);
         }
-        for (String serviceGroup : delReadyServiceGroup)
+        //这里的changedGroupSet应该是当前readyServiceGroupSet除掉addServiceGroup
+        Map<String, Set<String>> changedServiceGroupsMap = new HashMap<String, Set<String>>();
+        changedServiceGroupsMap.put(DependencyManagement.ADD_SERVICE_GROUPS_KEY, addReadyServiceGroup);
+        changedServiceGroupsMap.put(DependencyManagement.DEL_SERVICE_GROUPS_KEY, delReadyServiceGroup);
+        changedServiceGroupsMap.put(DependencyManagement.CHANGE_SERVICE_GROUPS_KEY, changeReadyServiceGroup);
+        return changedServiceGroupsMap;
+    }
+    
+    private void updateDependenceZnode(Map<String, Set<String>> changedServiceGroupsMap) throws KeeperException, InterruptedException, ServiceUnavailableException
+    {
+        //Update the znode to zookeeper
+        if (changedServiceGroupsMap == null)
         {
-            if (!changedGroupSet.contains(serviceGroup))
-            {
-                logger.error("Change group set should containe del service " + serviceGroup);
-            }
-            changedGroupSet.remove(serviceGroup);
+            logger.error("changedServiceGroupsMap should not be null");
+            return;
         }
-        if(!addReadyServiceGroup.isEmpty() || !delReadyServiceGroup.isEmpty() || !changedGroupSet.isEmpty())
+        Set<String> addReadyServiceGroup = changedServiceGroupsMap.get(DependencyManagement.ADD_SERVICE_GROUPS_KEY);
+        if (addReadyServiceGroup == null)
         {
-            updateDependenceZnode(addReadyServiceGroup, delReadyServiceGroup, changedGroupSet);
+            addReadyServiceGroup = new HashSet<String>();
         }
+        Set<String> delReadyServiceGroup = changedServiceGroupsMap.get(DependencyManagement.DEL_SERVICE_GROUPS_KEY);
+        if (delReadyServiceGroup == null)
+        {
+            delReadyServiceGroup = new HashSet<String>();
+        }
+        Set<String> changeReadyServiceGroup = changedServiceGroupsMap.get(DependencyManagement.CHANGE_SERVICE_GROUPS_KEY);
+        if (changeReadyServiceGroup == null)
+        {
+            changeReadyServiceGroup = new HashSet<String>();
+        }
+        updateDependenceZnode(addReadyServiceGroup, delReadyServiceGroup, changeReadyServiceGroup);
     }
     
     /**
@@ -362,8 +386,9 @@ public class DependencyManagementImpl implements DependencyManagement
      * @param changedGroupSet
      * @throws KeeperException
      * @throws InterruptedException
+     * @throws ServiceUnavailableException 
      */
-    private void updateDependenceZnode(Set<String> addReadyServiceGroup, Set<String> delReadyServiceGroup, Set<String> changedGroupSet) throws KeeperException, InterruptedException
+    private void updateDependenceZnode(Set<String> addReadyServiceGroup, Set<String> delReadyServiceGroup, Set<String> changedGroupSet) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
         for(String serviceGroup : addReadyServiceGroup)
         {
