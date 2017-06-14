@@ -19,3 +19,5 @@ orchestration :
             testTopic: "orchestrationTest"
 
 tomcatPort : 8092
+
+logging.file : "/opt/orchestration/log/console.log"

@@ -21,3 +21,5 @@ orchestration :
 tomcatPort : 8080
 
 endpoints.shutdown.enabled : true
+
+logging.file : "/Users/yanbinwa/Documents/workspace/springboot/serviceManager/serviceManagerOrchestration/log/orchestrationConsole.log"
