@@ -92,6 +92,7 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
         {
             isRunning = false;
             monitorThread.interrupt();
+            closeKafkaProducer();
             try
             {
                 deleteKafkaRegZNode();
@@ -147,6 +148,15 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
         producer = new KafkaProducer<Object, Object>(props);
     }
     
+    private void closeKafkaProducer()
+    {
+        if (producer != null)
+        {
+            producer.close();
+            producer = null;
+        }
+    }
+    
     private void monitorKafka()
     {
         logger.info("Start monitor kafka");
@@ -159,8 +169,8 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
             if (isTimeout)
             {
                 //这里说明kafka出现问题，删除Kafka的node
-                producer.close();
-                producer = null;
+                logger.trace("Send msg to kafka timeout. Need to reconnect");
+                closeKafkaProducer();
                 try
                 {
                     deleteKafkaRegZNode();

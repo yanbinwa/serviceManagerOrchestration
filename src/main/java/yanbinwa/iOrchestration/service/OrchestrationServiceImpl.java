@@ -31,6 +31,7 @@ import yanbinwa.iOrchestration.management.DependencyManagement;
 import yanbinwa.iOrchestration.management.DependencyManagementImpl;
 import yanbinwa.iOrchestration.management.KafkaMonitorManagementImpl;
 import yanbinwa.iOrchestration.management.MonitorManagement;
+import yanbinwa.iOrchestration.management.RedisMonitorManagementImpl;
 
 /**
  * 该服务包括:
@@ -399,10 +400,17 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 switch(serviceName)
                 {
                 case MONITOR_KAFKA_KEY:
+                    logger.info("kafka monitorProperty is " + monitorProperty);
                     monitorManagement = new KafkaMonitorManagementImpl(monitorProperty, this);
+                    break;
+                case MONITOR_REDIS_KEY:
+                    logger.info("redis monitorProperty is: " + monitorProperty);
+                    monitorManagement = new RedisMonitorManagementImpl(monitorProperty, this);
+                    break;
                 }
                 if (monitorManagement != null)
                 {
+                    logger.info("Add service monitor for " + serviceName);
                     serviceMonitorMap.put(serviceName, monitorManagement);
                 }
             }
@@ -597,7 +605,39 @@ public class OrchestrationServiceImpl implements OrchestrationService
         }
         catch (KeeperException e)
         {
-            logger.error("handerZookeeperEventAsStandby meet error " + e.getMessage());
+            if(e instanceof KeeperException.SessionExpiredException)
+            {
+                logger.info("zookeepr session is expired, need to reconnect");
+                if (zk != null)
+                {
+                    try
+                    {
+                        ZkUtil.closeZk(zk);
+                        Thread.sleep(ZK_RECONNECT_INTERVAL);
+                    } 
+                    catch (InterruptedException e1)
+                    {
+                        //do nothing
+                    }
+                }
+                serviceStatue = CommonConstants.SERVICE_STANDBY;
+                stopMonitorManagement();
+                dependencyManagement.reset();
+                zk = ZkUtil.connectToZk(zookeeperHostport, zkWatcher);
+                if (zk == null)
+                {
+                    logger.error("Can not connect to zookeeper: " + zookeeperHostport);
+                    return;
+                }
+                if(zk.getState() == ZooKeeper.States.CONNECTING)
+                {
+                    waitingForZookeeper();
+                }
+            }
+            else
+            {
+                e.printStackTrace();
+            }
         }
         catch (InterruptedException e)
         {
@@ -677,6 +717,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                     try
                     {
                         ZkUtil.closeZk(zk);
+                        Thread.sleep(ZK_RECONNECT_INTERVAL);
                     } 
                     catch (InterruptedException e1)
                     {

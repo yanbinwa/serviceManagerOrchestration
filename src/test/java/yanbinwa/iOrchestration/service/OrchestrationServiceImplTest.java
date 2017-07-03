@@ -17,8 +17,12 @@ public class OrchestrationServiceImplTest
         JSONArray kafkaArray = new JSONArray();
         serviceDependenceObj.put("kafka", kafkaArray);
         
+        JSONArray redisArray = new JSONArray();
+        serviceDependenceObj.put("redis", redisArray);
+        
         JSONArray cacheArray = new JSONArray();
         cacheArray.put("kafka");
+        cacheArray.put("redis");
         serviceDependenceObj.put("cache", cacheArray);
         
         JSONArray collectionArray = new JSONArray();
