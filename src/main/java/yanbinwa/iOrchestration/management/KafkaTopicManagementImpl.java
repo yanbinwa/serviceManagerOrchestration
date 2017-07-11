@@ -14,7 +14,8 @@ import org.json.JSONObject;
 
 import yanbinwa.common.constants.CommonConstants;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
-import yanbinwa.common.zNodedata.ZNodeServiceDataWithKafkaTopicImpl;
+import yanbinwa.common.zNodedata.decorate.ZNodeDecorateType;
+import yanbinwa.common.zNodedata.decorate.ZNodeServiceDataDecorateKafka;
 
 /**
  * 
@@ -61,12 +62,12 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
                 continue;
             }
             updateServiceGroupToTopicGroupMap(zNodeServiceData);
-            if (!(zNodeServiceData instanceof ZNodeServiceDataWithKafkaTopicImpl))
+            if (!(zNodeServiceData.isContainedDecoreate(ZNodeDecorateType.KAFKA)))
             {
                 continue;
             }
-            ZNodeServiceDataWithKafkaTopicImpl zNodeServiceDataWithKafkaTopic = (ZNodeServiceDataWithKafkaTopicImpl) zNodeServiceData;
-            String topicInfoStr = zNodeServiceDataWithKafkaTopic.getTopicInfo();
+            ZNodeServiceDataDecorateKafka decorate = (ZNodeServiceDataDecorateKafka)zNodeServiceData.getServiceDataDecorate(ZNodeDecorateType.KAFKA);
+            String topicInfoStr = decorate.getTopicInfo();
             JSONObject topicInfoObj = new JSONObject(topicInfoStr);
             if (topicInfoObj.has(CommonConstants.KAFKA_CONSUMERS_KEY))
             {
@@ -102,12 +103,12 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
                 continue;
             }
             updateServiceGroupToTopicGroupMap(zNodeServiceData);
-            if (!(zNodeServiceData instanceof ZNodeServiceDataWithKafkaTopicImpl))
+            if (!(zNodeServiceData.isContainedDecoreate(ZNodeDecorateType.KAFKA)))
             {
                 continue;
             }
-            ZNodeServiceDataWithKafkaTopicImpl zNodeServiceDataWithKafkaTopic = (ZNodeServiceDataWithKafkaTopicImpl) zNodeServiceData;
-            String topicInfoStr = zNodeServiceDataWithKafkaTopic.getTopicInfo();
+            ZNodeServiceDataDecorateKafka decorate = (ZNodeServiceDataDecorateKafka)zNodeServiceData.getServiceDataDecorate(ZNodeDecorateType.KAFKA);
+            String topicInfoStr = decorate.getTopicInfo();
             JSONObject topicInfoObj = new JSONObject(topicInfoStr);
             if (topicInfoObj.has(CommonConstants.KAFKA_CONSUMERS_KEY))
             {
@@ -331,6 +332,23 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
         List<Integer> avaliablePartitionKey = new ArrayList<Integer>();
         int partitionNum = getPartitionNumByTopicGroup(topicGroupName);
         int totleTopicNum = curTopicList.size() + addTopicSet.size();
+        List<String> addTopicList = new ArrayList<String>(addTopicSet);
+        if (totleTopicNum > partitionNum)
+        {
+            //TODO: 需要考虑如果之前的topic被抛弃了，但是之后又有topic down掉后，原来的topic是否可以加回来？？？
+            logger.info("The topic num: " + totleTopicNum + " is larger than the partitionNum: " + partitionNum);
+            if (curTopicList.size() > partitionNum)
+            {
+                logger.error("The current topic num should not ever larger than the partitionNum: " + topicGroupName);
+                return;
+            }
+            int dropTopicNum = totleTopicNum - partitionNum;
+            for (int i = 0; i < dropTopicNum; i ++)
+            {
+                String topic = addTopicList.remove(0);
+                logger.info("Drop topic: " + topic + " from topic group: " + topicGroupName);
+            }
+        }
         int partitionNumForEachTopic = partitionNum / totleTopicNum;
         int needMigratePartitionNum = partitionNumForEachTopic * addTopicSet.size();
         logger.info("partitionNum is: " + partitionNum
@@ -348,10 +366,6 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
         }
         else
         {
-            if (totleTopicNum > partitionNum)
-            {
-                logger.info("The topic num: " + totleTopicNum + " is larger than the partitionNum: " + partitionNum);
-            }
             int migratePartitionNum = 0;
             while(migratePartitionNum < needMigratePartitionNum)
             {
@@ -361,8 +375,7 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
                     List<Integer> partitionKeyList = new ArrayList<Integer>(partitionKeySet);
                     if (partitionKeyList.size() > partitionNumForEachTopic)
                     {
-                        int partitionKey = partitionKeyList.get(0);
-                        partitionKeyList.remove(0);
+                        int partitionKey = partitionKeyList.remove(0);
                         partitionKeySet.remove(partitionKey);
                         avaliablePartitionKey.add(partitionKey);
                         logger.info("Migrate the partitionKey: " + partitionKey + " from topic: " + topic);
@@ -376,12 +389,13 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
             }
         }
         logger.info("avaliablePartitionKey is: " + avaliablePartitionKey);
-        for(String topic : addTopicSet)
+        // 如果partition是10，但是addTopic为3，则可能就有partition漏掉的，所以这里分两步，第一步是保证addTopicSet均有
+        // partitionNumForEachTopic，之后再把多余的写入到addTopic中
+        for(String topic : addTopicList)
         {
             for(int i = 0; i < partitionNumForEachTopic; i ++)
             {   
-                int partitionKey = avaliablePartitionKey.get(0);
-                avaliablePartitionKey.remove(0);
+                int partitionKey = avaliablePartitionKey.remove(0);
                 logger.info("Migrate the partitionKey: " + partitionKey + " to topic: " + topic);
                 Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(topic);
                 if (partitionKeySet == null)
@@ -392,6 +406,20 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
                 partitionKeySet.add(partitionKey);
             }
             curTopicList.add(topic);
+        }
+        while(avaliablePartitionKey.size() > 0)
+        {
+            for (String topic : addTopicList)
+            {
+                int partitionKey = avaliablePartitionKey.remove(0);
+                logger.info("Migrate the partitionKey: " + partitionKey + " to topic: " + topic);
+                Set<Integer> partitionKeySet = topicToPartitionKeyMapCopy.get(topic);
+                partitionKeySet.add(partitionKey);
+                if (avaliablePartitionKey.size() <= 0)
+                {
+                    break;
+                }
+            }
         }
     }
     
@@ -496,12 +524,12 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
     
     private Set<String> getTopicGroupSetByZNodeServiceData(ZNodeServiceData zNodeServiceData)
     {
-        if (zNodeServiceData == null || !(zNodeServiceData instanceof ZNodeServiceDataWithKafkaTopicImpl))
+        if (zNodeServiceData == null || !(zNodeServiceData.isContainedDecoreate(ZNodeDecorateType.KAFKA)))
         {
             return null;
         }
-        ZNodeServiceDataWithKafkaTopicImpl zNodeServiceDataWithKafkaTopic = (ZNodeServiceDataWithKafkaTopicImpl) zNodeServiceData;
-        String topicInfoStr = zNodeServiceDataWithKafkaTopic.getTopicInfo();
+        ZNodeServiceDataDecorateKafka decorate = (ZNodeServiceDataDecorateKafka)zNodeServiceData.getServiceDataDecorate(ZNodeDecorateType.KAFKA);
+        String topicInfoStr = decorate.getTopicInfo();
         JSONObject topicInfoObj = new JSONObject(topicInfoStr);
         if (!topicInfoObj.has(CommonConstants.KAFKA_PRODUCERS_KEY))
         {

@@ -1,5 +1,6 @@
 package yanbinwa.iOrchestration.management;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -12,12 +13,22 @@ import org.apache.zookeeper.KeeperException;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import yanbinwa.common.exceptions.ServiceUnavailableException;
 import yanbinwa.common.zNodedata.ZNodeDependenceData;
-import yanbinwa.common.zNodedata.ZNodeDependenceDataWithKafkaTopic;
+import yanbinwa.common.zNodedata.ZNodeDependenceDataImpl;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
-import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
+import yanbinwa.common.zNodedata.decorate.ZNodeDecorateType;
 import yanbinwa.iOrchestration.service.OrchestrationService;
 import yanbinwa.iOrchestration.service.OrchestrationServiceImpl;
+
+/**
+ * 
+ * 如果发生改变，除了add和delete对应的serviceGroup，其它的serviceGroup信息也会更新进去，这样某个service所依赖的serviceGroup发生
+ * 改变，其也能感知到。
+ * 
+ * @author yanbinwa
+ *
+ */
 
 public class DependencyManagementImpl implements DependencyManagement
 {
@@ -42,6 +53,8 @@ public class DependencyManagementImpl implements DependencyManagement
     
     KafkaTopicManagement kafkaTopicManagement = null;
     
+    RedisPartitionManagement redisPartitionManagement = null;
+    
     public DependencyManagementImpl(OrchestrationServiceImpl orchestrationServiceImpl, JSONObject dependencyProperties)
     {
         if (orchestrationServiceImpl == null)
@@ -54,8 +67,17 @@ public class DependencyManagementImpl implements DependencyManagement
         JSONObject serviceDependency = dependencyProperties.getJSONObject(DependencyManagement.SERVICE_DEPENDENCY_KEY);
         buildDependenceMap(serviceDependency);
         
-        JSONObject kafkaTopicInfo = dependencyProperties.getJSONObject(DependencyManagement.KAFKA_TOPIC_INFO_KEY);
-        kafkaTopicManagement = new KafkaTopicManagementImpl(kafkaTopicInfo);
+        if (dependencyProperties.has(DependencyManagement.KAFKA_TOPIC_INFO_KEY))
+        {
+            JSONObject kafkaTopicInfo = dependencyProperties.getJSONObject(DependencyManagement.KAFKA_TOPIC_INFO_KEY);
+            kafkaTopicManagement = new KafkaTopicManagementImpl(kafkaTopicInfo); 
+        }
+        
+        if (dependencyProperties.has(DependencyManagement.REDIS_PARTITION_NUM_KEY))
+        {
+            int redisPartitionNum = dependencyProperties.getInt(DependencyManagement.REDIS_PARTITION_NUM_KEY);
+            redisPartitionManagement = new RedisPartitionManagementImpl(redisPartitionNum); 
+        }
     }
 
     @Override
@@ -117,7 +139,7 @@ public class DependencyManagementImpl implements DependencyManagement
         onLineServiceNameToServiceDataMap.clear();
         readyServiceGroupSet.clear();
         
-        kafkaTopicManagement.reset();
+        resetChildManagement();
     }
 
     @Override
@@ -193,7 +215,7 @@ public class DependencyManagementImpl implements DependencyManagement
     
     private void updateServiceDependence(Map<String, ZNodeServiceData> addZNodeMap, Map<String, ZNodeServiceData> delZNodeMap) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
-        this.kafkaTopicManagement.updataKafkaTopicMapping(addZNodeMap, delZNodeMap);
+        updateChildManagement(addZNodeMap, delZNodeMap);
         Map<String, Set<String>> changedServiceGroupsMap = null;
         lock.lock();
         try
@@ -447,17 +469,80 @@ public class DependencyManagementImpl implements DependencyManagement
             serviceDataMap.put(dependenceServiceGroup, serviceDataSet);
         }
         /**
-         * 这里默认每一个service group中kafka的producer配置是一样的
+         * 这里默认每一个service group中kafka的producer配置是一样的，如果
          */
-        Map<String, Map<String, Set<Integer>>> topicToPartitionKeyMap = 
-                                                kafkaTopicManagement.getTopicGroupToTopicToPartitionKeyMappingByServiceGroup(serviceGroup);
-        if (topicToPartitionKeyMap != null)
+        ZNodeDependenceData depData = new ZNodeDependenceDataImpl(serviceDataMap);
+        addZnodeDependenceDecorate(depData, serviceGroup);   
+        return depData;
+    }
+    
+    private void addZnodeDependenceDecorate(ZNodeDependenceData depData, String serviceGroup)
+    {
+        Set<String> serviceNameSet = onLineServiceGroupToServiceNameSetMap.get(serviceGroup);
+        if (serviceNameSet == null || serviceNameSet.size() == 0)
         {
-            return new ZNodeDependenceDataWithKafkaTopic(serviceDataMap, topicToPartitionKeyMap);
+            logger.error("serviceGroup should not be null or empty " + serviceGroup);
+            return;
         }
-        else
+        String serviceName = new ArrayList<String>(serviceNameSet).get(0);
+        ZNodeServiceData data = onLineServiceNameToServiceDataMap.get(serviceName);
+        if (data == null)
         {
-            return new ZNodeDependenceData(serviceDataMap);
+            logger.error("service data should not be null " + serviceName);
+            return;
+        }
+        
+        //KAFKA
+        if (data.isContainedDecoreate(ZNodeDecorateType.KAFKA))
+        {
+            Map<String, Map<String, Set<Integer>>> topicToPartitionKeyMap = 
+                    kafkaTopicManagement.getTopicGroupToTopicToPartitionKeyMappingByServiceGroup(serviceGroup);
+            if (topicToPartitionKeyMap != null)
+            {
+                depData.addDependenceDataDecorate(ZNodeDecorateType.KAFKA, topicToPartitionKeyMap);
+            }
+            else
+            {
+                //如果只有consumer的topic info，那么就取不到topicToPartitionKeyMap  
+                logger.info("Should get kafka topic partition info from service group: " + serviceGroup);
+            }
+        }
+        //REDIS
+        if (data.isContainedDecoreate(ZNodeDecorateType.REDIS))
+        {
+            Map<String, Set<Integer>> redisToPartitionKeyMap = redisPartitionManagement.getRedisToPartitionKeyMapping();
+            if (redisToPartitionKeyMap != null)
+            {
+                depData.addDependenceDataDecorate(ZNodeDecorateType.REDIS, redisToPartitionKeyMap);
+            }
+            else
+            {
+                logger.error("Should get redis partition info from service group: " + serviceGroup);
+            }
+        }
+    }
+    
+    private void updateChildManagement(Map<String, ZNodeServiceData> addZNodeMap, Map<String, ZNodeServiceData> delZNodeMap)
+    {
+        if (kafkaTopicManagement != null)
+        {
+            kafkaTopicManagement.updataKafkaTopicMapping(addZNodeMap, delZNodeMap);
+        }
+        if (redisPartitionManagement != null)
+        {
+            redisPartitionManagement.updataRedisPartitionMapping(addZNodeMap, delZNodeMap);
+        }
+    }
+    
+    private void resetChildManagement()
+    {
+        if (kafkaTopicManagement != null)
+        {
+            kafkaTopicManagement.reset(); 
+        }
+        if (redisPartitionManagement != null)
+        {
+            redisPartitionManagement.reset();
         }
     }
 }

@@ -1,5 +1,5 @@
 orchestration :
-    dependencyProperties : "{\"serviceDependency\":{\"cache\":[\"kafka\",\"redis\"],\"kafka\":[],\"collection\":[\"kafka\",\"cache\"],\"redis\":[]},\"kafkaTopicInfo\":{\"cacheTopic\":10}}"
+    dependencyProperties : "{\"redisPartitionNum\":10,\"serviceDependency\":{\"cache\":[\"kafka\",\"redis\"],\"kafka\":[],\"aggregation\":[\"kafka\",\"cache\"],\"collection\":[\"kafka\",\"aggregation\",\"cache\"],\"redis\":[]},\"kafkaTopicInfo\":{\"aggregationTopic\":10}}"
     serviceDataProperties :
         serviceGroupName : "orchestration"
         serviceName : "orchestration_standalone"
@@ -18,10 +18,11 @@ orchestration :
             kafkaHostPort : "172.18.0.41:9101"
             testTopic: "orchestrationTest"
         redis:
-            serviceGroupName : "redis"
-            serviceName : "redis"
-            redisHost: "172.18.0.71"
-            redisPort: "6381"
+            redis_1:
+                serviceGroupName : "redis"
+                serviceName : "redis_1"
+                redisHost: "172.18.0.71"
+                redisPort: "6381"
 
 tomcatPort : 8091
 

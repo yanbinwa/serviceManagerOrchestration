@@ -11,9 +11,9 @@ import org.apache.kafka.common.errors.TimeoutException;
 import org.apache.log4j.Logger;
 import org.apache.zookeeper.KeeperException;
 
+import yanbinwa.common.exceptions.ServiceUnavailableException;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 import yanbinwa.common.zNodedata.ZNodeServiceDataImpl;
-import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
 import yanbinwa.iOrchestration.service.OrchestrationService;
 
 public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
@@ -58,7 +58,8 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
             logger.error("Kafka service name should not be null");
             return;
         }
-        kafkaData = new ZNodeServiceDataImpl("kafkaIp", serviceGroupName, serviceName, -1, "kafkaUrl");
+        // kafka service data 与普通的不一致
+        kafkaData = new ZNodeServiceDataImpl(kafkaHostPort, serviceGroupName, serviceName, -1, "kafkaUrl");
     }
     
     @Override

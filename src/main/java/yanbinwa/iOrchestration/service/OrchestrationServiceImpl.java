@@ -20,13 +20,13 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.stereotype.Service;
 
 import yanbinwa.common.constants.CommonConstants;
+import yanbinwa.common.exceptions.ServiceUnavailableException;
 import yanbinwa.common.utils.ZkUtil;
 import yanbinwa.common.zNodedata.ZNodeData;
 import yanbinwa.common.zNodedata.ZNodeDataUtil;
 import yanbinwa.common.zNodedata.ZNodeDependenceData;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 import yanbinwa.common.zNodedata.ZNodeServiceDataImpl;
-import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
 import yanbinwa.iOrchestration.management.DependencyManagement;
 import yanbinwa.iOrchestration.management.DependencyManagementImpl;
 import yanbinwa.iOrchestration.management.KafkaMonitorManagementImpl;
@@ -374,6 +374,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
         zookeeperHostport = zNodeInfoProperties.get(OrchestrationServiceImpl.ZK_HOSTPORT);
     }
     
+    @SuppressWarnings("unchecked")
     private void buildMonitorServiceMap()
     {
         if (monitorProperties != null)
@@ -394,18 +395,14 @@ public class OrchestrationServiceImpl implements OrchestrationService
                             + "The properties is: " + entry.getValue());
                     continue;
                 }
-                @SuppressWarnings("unchecked")
-                Map<String, String> monitorProperty = (Map<String, String>)monitorPropertyObj;
                 MonitorManagement monitorManagement = null;
                 switch(serviceName)
                 {
                 case MONITOR_KAFKA_KEY:
-                    logger.info("kafka monitorProperty is " + monitorProperty);
-                    monitorManagement = new KafkaMonitorManagementImpl(monitorProperty, this);
+                    monitorManagement = new KafkaMonitorManagementImpl((Map<String, String>)monitorPropertyObj, this);
                     break;
                 case MONITOR_REDIS_KEY:
-                    logger.info("redis monitorProperty is: " + monitorProperty);
-                    monitorManagement = new RedisMonitorManagementImpl(monitorProperty, this);
+                    monitorManagement = new RedisMonitorManagementImpl((Map<String, Object>)monitorPropertyObj, this);
                     break;
                 }
                 if (monitorManagement != null)

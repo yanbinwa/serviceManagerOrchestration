@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
-import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
+import yanbinwa.common.exceptions.ServiceUnavailableException;
 import yanbinwa.iOrchestration.service.OrchestrationService;
 
 @RestController
@@ -21,7 +21,7 @@ public class OrchestrationController
     OrchestrationService orchestrationService;
     
     @RequestMapping(value="/getReadyService",method=RequestMethod.GET)
-    public String getReadyService() throws ServiceUnavailableException 
+    public String getReadyService() throws yanbinwa.common.exceptions.ServiceUnavailableException 
     {
         return orchestrationService.getReadyService().toString();
     }

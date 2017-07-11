@@ -1,5 +1,6 @@
 package yanbinwa.iOrchestration.management;
 
+import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.log4j.Logger;
@@ -7,14 +8,15 @@ import org.apache.zookeeper.KeeperException;
 
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisConnectionException;
+import yanbinwa.common.exceptions.ServiceUnavailableException;
 import yanbinwa.common.redis.RedisClient;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 import yanbinwa.common.zNodedata.ZNodeServiceDataImpl;
-import yanbinwa.iOrchestration.exception.ServiceUnavailableException;
 import yanbinwa.iOrchestration.service.OrchestrationService;
 
 /**
- * 通过redisClient.getJedisConnection()方法就可以判断redis是否存活
+ * 通过redisClient.getJedisConnection()方法就可以判断redis是否存活，这里有多个RedisMonitor来监控Redis服务，并创建
+ * 相应的Znode
  * 
  * @author yanbinwa
  *
@@ -25,82 +27,56 @@ public class RedisMonitorManagementImpl implements MonitorManagement
     private static final Logger logger = Logger.getLogger(RedisMonitorManagementImpl.class);
     
     private OrchestrationService orchestrationService = null;
-    private RedisClient redisClient = null;
-    
-    private String redisHost;
-    private int redisPort;
-    private int maxTotal;
-    private int maxIdle;
-    private long maxWait;
-    private boolean testOnBorrow;
     
     private Thread monitorThread = null;
     
     private boolean isRunning = false;
     
-    ZNodeServiceData redisData = null;
+    private Map<String, ZNodeServiceData> redisDataMap = new HashMap<String, ZNodeServiceData>();
+    private Map<String, RedisClient> redisClientMap = new HashMap<String, RedisClient>();
             
-    public RedisMonitorManagementImpl(Map<String, String> redisProperites, OrchestrationService orchestrationService)
+    public RedisMonitorManagementImpl(Map<String, Object> redisProperites, OrchestrationService orchestrationService)
     {
         this.orchestrationService = orchestrationService;
         
-        String serviceGroupName = redisProperites.get(OrchestrationService.SERVICE_SERVICEGROUPNAME);
-        if (serviceGroupName == null)
+        for(Map.Entry<String, Object> entry : redisProperites.entrySet())
         {
-            logger.error("redis service group name should not be null");
-            return;
+            Object redisPropertyObj = entry.getValue();
+            if (!(redisPropertyObj instanceof Map))
+            {
+                logger.error("Redis property should be map " + redisPropertyObj);
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, String> redisProperty = (Map<String, String>)redisPropertyObj;
+            String serviceGroupName = redisProperty.get(OrchestrationService.SERVICE_SERVICEGROUPNAME);
+            if (serviceGroupName == null)
+            {
+                logger.error("redis service group name should not be null");
+                continue;
+            }
+            String serviceName = redisProperty.get(OrchestrationService.SERVICE_SERVICENAME);
+            if (serviceName == null)
+            {
+                logger.error("redis service name should not be null");
+                continue;
+            } 
+            String redisHost = redisProperty.get(MonitorManagement.MONITOR_REDIS_HOST_KEY);
+            if (redisHost == null)
+            {
+                logger.error("Redis host should not be null");
+                continue;
+            }
+            String redisPortStr = redisProperty.get(MonitorManagement.MONITOR_REDIS_PORT_KEY);
+            if (redisPortStr == null)
+            {
+                logger.error("Redis port should not be null");
+                return;
+            }
+            int redisPort = Integer.parseInt(redisPortStr);
+            ZNodeServiceData redisData = new ZNodeServiceDataImpl(redisHost, serviceGroupName, serviceName, redisPort, "redisUrl");
+            redisDataMap.put(entry.getKey(), redisData);
         }
-        String serviceName = redisProperites.get(OrchestrationService.SERVICE_SERVICENAME);
-        if (serviceName == null)
-        {
-            logger.error("redis service name should not be null");
-            return;
-        }
-        
-        redisData = new ZNodeServiceDataImpl("redisIp", serviceGroupName, serviceName, -1, "redisUrl");
-        
-        redisHost = redisProperites.get(MonitorManagement.MONITOR_REDIS_HOST_KEY);
-        if (redisHost == null)
-        {
-            logger.error("Redis host should not be null");
-            return;
-        }
-        String redisPortStr = redisProperites.get(MonitorManagement.MONITOR_REDIS_PORT_KEY);
-        if (redisPortStr == null)
-        {
-            logger.error("Redis port should not be null");
-            return;
-        }
-        redisPort = Integer.parseInt(redisPortStr);
-        
-        maxTotal = MonitorManagement.MONITOR_REDIS_MAX_TOTAL_DEFAULT;
-        String maxTotalStr = redisProperites.get(MonitorManagement.MONITOR_REDIS_MAX_TOTAL_KEY);
-        if (maxTotalStr != null)
-        {
-            maxTotal = Integer.parseInt(maxTotalStr);
-        }
-        
-        maxIdle = MonitorManagement.MONITOR_REDIS_MAX_IDEL_DEFAULT;
-        String maxIdleStr = redisProperites.get(MonitorManagement.MONITOR_REDIS_MAX_WAIT_KEY);
-        if (maxIdleStr != null)
-        {
-            maxIdle = Integer.parseInt(maxIdleStr);
-        }
-        
-        maxWait = MonitorManagement.MONITOR_REDIS_MAX_WAIT_DEFAULT;
-        String maxWaitStr = redisProperites.get(MonitorManagement.MONITOR_REDIS_MAX_WAIT_KEY);
-        if (maxWaitStr != null)
-        {
-            maxWait = Integer.parseInt(maxWaitStr);
-        }
-        
-        testOnBorrow = MonitorManagement.MONITOR_REDIS_TEST_ON_BORROW_DEFAULT;
-        String testOnBorrowStr = redisProperites.get(MonitorManagement.MONITOR_REDIS_TEST_ON_BORROW_KEY);
-        if (testOnBorrowStr != null)
-        {
-            testOnBorrow = Boolean.parseBoolean(testOnBorrowStr);
-        }
-        
     }
     
     @Override
@@ -109,7 +85,7 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         if (!isRunning)
         {
             isRunning = true;
-            buildRedisClient();
+            buildRedisClients();
             monitorThread = new Thread(new Runnable(){
 
                 @Override
@@ -134,10 +110,13 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         {
             isRunning = false;
             monitorThread.interrupt();
-            closeRedisClient();
+            closeRedisClients();
             try
             {
-                deleteRedisRegZNode();
+                for (ZNodeServiceData redisData : redisDataMap.values())
+                {
+                    deleteRedisRegZNode(redisData);
+                }
             } 
             catch (KeeperException e)
             {
@@ -159,17 +138,43 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         }
     }
     
-    private void buildRedisClient()
+    private void buildRedisClients()
     {
-        redisClient = new RedisClient(redisHost, redisPort, maxTotal, maxIdle, maxWait, testOnBorrow);
+        for (Map.Entry<String, ZNodeServiceData> entry : redisDataMap.entrySet())
+        {
+            RedisClient redisClient = buildRedisClient(entry.getValue());
+            if (redisClient != null)
+            {
+                redisClientMap.put(entry.getKey(), redisClient);
+            }
+        }
     }
     
-    private void closeRedisClient()
+    private RedisClient buildRedisClient(ZNodeServiceData redisData)
+    {
+        if (redisData == null)
+        {
+            return null;
+        }
+        return new RedisClient(redisData.getIp(), redisData.getPort(), 
+                MONITOR_REDIS_MAX_TOTAL_DEFAULT, MONITOR_REDIS_MAX_IDEL_DEFAULT, 
+                MONITOR_REDIS_MAX_WAIT_DEFAULT, MONITOR_REDIS_TEST_ON_BORROW_DEFAULT);
+    }
+    
+    private void closeRedisClients()
+    {
+        for (RedisClient redisClient : redisClientMap.values())
+        {
+            closeRedisClient(redisClient);
+        }
+        redisClientMap.clear();
+    }
+    
+    private void closeRedisClient(RedisClient redisClient)
     {
         if (redisClient != null)
         {
             redisClient.closePool();
-            redisClient = null;
         }
     }
     
@@ -178,71 +183,93 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         logger.info("Start monitor redis");
         while(isRunning)
         {
-            try
+            for (Map.Entry<String, ZNodeServiceData> entry : redisDataMap.entrySet())
             {
-                Jedis jedis = redisClient.getJedisConnection();
-                redisClient.returnJedisConnection(jedis);
+                String redisClientKey = entry.getKey();
+                ZNodeServiceData redisData = entry.getValue();
+                RedisClient redisClient = redisClientMap.get(redisClientKey);
+                if (redisClient == null)
+                {
+                    redisClient = buildRedisClient(redisData);
+                    redisClientMap.put(redisClientKey, redisClient);
+                }
                 try
                 {
-                    createRedisRegZNode();
-                    Thread.sleep(REDIS_CHECK_INTERVAL);
-                }
-                catch (InterruptedException e)
-                {
-                    if(!isRunning)
+                    Jedis jedis = redisClient.getJedisConnection();
+                    redisClient.returnJedisConnection(jedis);
+                    try
                     {
-                        logger.info("Close the redis worker thread");
+                        createRedisRegZNode(redisData);
                     }
-                    else
+                    catch (InterruptedException e)
+                    {
+                        if(!isRunning)
+                        {
+                            logger.info("Close the redis worker thread");
+                        }
+                        else
+                        {
+                            e.printStackTrace();
+                        }
+                    } 
+                    catch (KeeperException e)
                     {
                         e.printStackTrace();
+                    } 
+                    catch (ServiceUnavailableException e)
+                    {
+                        logger.info("orchestrationService is stop");
                     }
-                } 
-                catch (KeeperException e)
+                }
+                catch (JedisConnectionException jedisConnectionException)
                 {
-                    e.printStackTrace();
-                } 
-                catch (ServiceUnavailableException e)
-                {
-                    logger.info("orchestrationService is stop");
-                    return;
+                    closeRedisClient(redisClient);
+                    redisClientMap.remove(redisClientKey);
+                    try
+                    {
+                        deleteRedisRegZNode(redisDataMap.get(entry.getKey()));
+                    } 
+                    catch (InterruptedException e)
+                    {
+                        if(!isRunning)
+                        {
+                            logger.info("Close the redis monitor worker thread");
+                        }
+                        else
+                        {
+                            e.printStackTrace();
+                        }
+                    } 
+                    catch (KeeperException e)
+                    {
+                        e.printStackTrace();
+                    } 
+                    catch (ServiceUnavailableException e)
+                    {
+                        logger.info("orchestrationService is stop");
+                    }
+                    continue;
                 }
             }
-            catch(JedisConnectionException jedisConnectionException)
+            try
             {
-                closeRedisClient();
-                try
+                Thread.sleep(REDIS_CHECK_INTERVAL);
+            } 
+            catch (InterruptedException e)
+            {
+                if(!isRunning)
                 {
-                    deleteRedisRegZNode();
-                    Thread.sleep(MONITOR_REDIS_TIMEOUT_SLEEP);
-                } 
-                catch (InterruptedException e)
-                {
-                    if(!isRunning)
-                    {
-                        logger.info("Close the redis monitor worker thread");
-                    }
-                    else
-                    {
-                        e.printStackTrace();
-                    }
-                } 
-                catch (KeeperException e)
+                    logger.info("Close the redis monitor worker thread");
+                }
+                else
                 {
                     e.printStackTrace();
-                } 
-                catch (ServiceUnavailableException e)
-                {
-                    logger.info("orchestrationService is stop");
-                    return;
                 }
-                buildRedisClient();
-                continue;
             }
         }
     }
     
-    private void createRedisRegZNode() throws KeeperException, InterruptedException, ServiceUnavailableException
+    private void createRedisRegZNode(ZNodeServiceData redisData) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
         if (!orchestrationService.isRegZnodeExist(redisData.getServiceName()))
         {
@@ -251,7 +278,7 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         }
     }
     
-    private void deleteRedisRegZNode() throws KeeperException, InterruptedException, ServiceUnavailableException
+    private void deleteRedisRegZNode(ZNodeServiceData redisData) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
         if (orchestrationService.isRegZnodeExist(redisData.getServiceName()))
         {
@@ -259,5 +286,4 @@ public class RedisMonitorManagementImpl implements MonitorManagement
             logger.info("Delete redis znode: " + redisData.getServiceName());
         }
     }
-
 }

@@ -25,17 +25,24 @@ public class OrchestrationServiceImplTest
         cacheArray.put("redis");
         serviceDependenceObj.put("cache", cacheArray);
         
+        JSONArray aggregationArray = new JSONArray();
+        aggregationArray.put("kafka");
+        aggregationArray.put("cache");
+        serviceDependenceObj.put("aggregation", aggregationArray);
+        
         JSONArray collectionArray = new JSONArray();
         collectionArray.put("kafka");
+        collectionArray.put("aggregation");
         collectionArray.put("cache");
         serviceDependenceObj.put("collection", collectionArray);
         
         rootObj.put("serviceDependency", serviceDependenceObj);
         
         JSONObject kafkaTopicInfoObj = new JSONObject();
-        kafkaTopicInfoObj.put("cacheTopic", 10);
-        
+        kafkaTopicInfoObj.put("aggregationTopic", 10);
         rootObj.put("kafkaTopicInfo", kafkaTopicInfoObj);
+        
+        rootObj.put("redisPartitionNum", 10);
         System.out.println(rootObj.toString());
     }
     
@@ -45,7 +52,6 @@ public class OrchestrationServiceImplTest
         String dependenceStr = "{\"serviceDependency\":{\"cache\":[\"kafka\"],\"kafka\":[],\"collection\":[\"kafka\",\"cache\"]},\"kafkaTopicInfo\":{\"cacheTopic\":10}}";
         JSONObject obj = new JSONObject(dependenceStr);
         System.out.println(obj.toString());
-        
     }
 
 }
