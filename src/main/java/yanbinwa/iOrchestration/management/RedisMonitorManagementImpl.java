@@ -6,7 +6,6 @@ import java.util.Map;
 import org.apache.log4j.Logger;
 import org.apache.zookeeper.KeeperException;
 
-import redis.clients.jedis.Jedis;
 import redis.clients.jedis.exceptions.JedisConnectionException;
 import yanbinwa.common.exceptions.ServiceUnavailableException;
 import yanbinwa.common.redis.RedisClient;
@@ -85,7 +84,6 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         if (!isRunning)
         {
             isRunning = true;
-            buildRedisClients();
             monitorThread = new Thread(new Runnable(){
 
                 @Override
@@ -138,6 +136,7 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         }
     }
     
+    @SuppressWarnings("unused")
     private void buildRedisClients()
     {
         for (Map.Entry<String, ZNodeServiceData> entry : redisDataMap.entrySet())
@@ -150,6 +149,12 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         }
     }
     
+    /**
+     * 这里可能抛出JedisConnectionException，当Redis服务down的时候
+     * 
+     * @param redisData
+     * @return
+     */
     private RedisClient buildRedisClient(ZNodeServiceData redisData)
     {
         if (redisData == null)
@@ -178,6 +183,12 @@ public class RedisMonitorManagementImpl implements MonitorManagement
         }
     }
     
+    
+    /**
+     * 
+     * 这里有问题，如果已经是预配了了connection的话，在测试写入时是否会报错，需要这样监测
+     * 
+     */
     private void monitorRedis()
     {
         logger.info("Start monitor redis");
@@ -188,15 +199,20 @@ public class RedisMonitorManagementImpl implements MonitorManagement
                 String redisClientKey = entry.getKey();
                 ZNodeServiceData redisData = entry.getValue();
                 RedisClient redisClient = redisClientMap.get(redisClientKey);
-                if (redisClient == null)
-                {
-                    redisClient = buildRedisClient(redisData);
-                    redisClientMap.put(redisClientKey, redisClient);
-                }
                 try
                 {
-                    Jedis jedis = redisClient.getJedisConnection();
-                    redisClient.returnJedisConnection(jedis);
+                    if (redisClient == null)
+                    {
+                        redisClient = buildRedisClient(redisData);
+                        redisClientMap.put(redisClientKey, redisClient);
+                    }
+                    boolean ret = redisClient.getJedisConnection();
+                    if (!ret)
+                    {
+                        logger.error("Can not get the test redis connection");
+                        continue;
+                    }
+                    redisClient.setStringWithExpireTime(REDIS_MONITOR_KEY, REDIS_MONITOR_VALUE, REDIS_MONITOR_EXPIRE_TIME);
                     try
                     {
                         createRedisRegZNode(redisData);
@@ -225,6 +241,7 @@ public class RedisMonitorManagementImpl implements MonitorManagement
                 {
                     closeRedisClient(redisClient);
                     redisClientMap.remove(redisClientKey);
+                    redisClient = null;
                     try
                     {
                         deleteRedisRegZNode(redisDataMap.get(entry.getKey()));
@@ -249,6 +266,17 @@ public class RedisMonitorManagementImpl implements MonitorManagement
                         logger.info("orchestrationService is stop");
                     }
                     continue;
+                } 
+                catch (InterruptedException e1)
+                {
+                    e1.printStackTrace();
+                }
+                finally
+                {
+                    if (redisClient != null)
+                    {
+                        redisClient.returnJedisConnection();
+                    }
                 }
             }
             try

@@ -4,7 +4,6 @@ import static org.junit.Assert.*;
 
 import org.junit.Test;
 
-import redis.clients.jedis.Jedis;
 import yanbinwa.common.redis.RedisClient;
 
 public class RedisMonitorManagementImplTest
@@ -21,21 +20,29 @@ public class RedisMonitorManagementImplTest
         boolean testOnBorrow = true;
         
         RedisClient redisClient = new RedisClient(host, port, maxtotal, maxIdle, maxWaitTime, testOnBorrow);
-        Jedis redis = null;
         try
         {
-            redis = redisClient.getJedisConnection();
+            boolean ret = redisClient.getJedisConnection();
+            if (!ret)
+            {
+                fail("Can not build connection");
+            }
+            redisClient.setString("redisTest", "Test");
+            String value = redisClient.getString("redisTest");
+            if (!value.equals("Test"))
+            {
+                fail("redis is not work well");
+            }
         }
         catch(Exception e)
         {
             e.printStackTrace();
             fail("There is some exception");
         }
-        redisClient.setString(redis, "redisTest", "Test");
-        String value = redisClient.getString(redis, "redisTest");
-        if (!value.equals("Test"))
+        finally
         {
-            fail("redis is not work well");
+            redisClient.returnJedisConnection();
         }
+        redisClient.closePool();
     }
 }

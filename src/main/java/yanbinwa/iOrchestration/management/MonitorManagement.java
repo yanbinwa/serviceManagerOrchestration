@@ -21,4 +21,8 @@ public interface MonitorManagement extends ServiceLifeCycle
     
     public static final int MONITOR_REDIS_TIMEOUT_SLEEP = 5 * 1000;
     public static final int REDIS_CHECK_INTERVAL = 5 * 1000;
+    
+    public static final String REDIS_MONITOR_KEY = "RedisTestKey";
+    public static final String REDIS_MONITOR_VALUE = "RedisMonitorValue";
+    public static final int REDIS_MONITOR_EXPIRE_TIME = 1;
 }
