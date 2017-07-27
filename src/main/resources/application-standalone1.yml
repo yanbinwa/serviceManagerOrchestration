@@ -1,0 +1,17 @@
+orchestration :
+    serviceDataProperties :
+        serviceGroupName : "orchestration"
+        serviceName : "orchestration_standalone"
+        ip : "172.18.0.21"
+        port : 8091
+        rootUrl : "/iOrchestration"
+    zNodeInfoProperties:
+        confZnodePath : "/confManageNode"
+        regZnodePath : "/regManageNode"
+        regZnodeChildPath : "/regManageNode/regManageChildNode"
+        depZnodePath : "/depManageNode"
+        zookeeperHostport : "172.18.0.11:2191"
+
+tomcatPort : 8091
+
+logging.file : "/opt/orchestration/log/console.log"

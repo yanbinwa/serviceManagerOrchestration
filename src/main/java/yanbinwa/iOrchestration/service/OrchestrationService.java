@@ -5,12 +5,13 @@ import org.json.JSONObject;
 import org.springframework.beans.factory.InitializingBean;
 
 import yanbinwa.common.exceptions.ServiceUnavailableException;
+import yanbinwa.common.iInterface.ConfigServiceIf;
 import yanbinwa.common.iInterface.ServiceLifeCycle;
 import yanbinwa.common.zNodedata.ZNodeData;
 import yanbinwa.common.zNodedata.ZNodeDependenceData;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 
-public interface OrchestrationService extends InitializingBean, ServiceLifeCycle
+public interface OrchestrationService extends InitializingBean, ServiceLifeCycle, ConfigServiceIf
 {
     public static final String ZNODE_REGPATH = "regZnodePath";
     public static final String ZNODE_REGCHILDPATH = "regZnodeChildPath";

@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.log4j.Logger;
 import org.apache.zookeeper.KeeperException;
@@ -13,14 +14,19 @@ import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
 import org.json.JSONObject;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.stereotype.Service;
 
+import yanbinwa.common.configClient.ConfigCallBack;
+import yanbinwa.common.configClient.ConfigClient;
+import yanbinwa.common.configClient.ConfigClientImpl;
+import yanbinwa.common.configClient.ServiceConfigState;
 import yanbinwa.common.constants.CommonConstants;
 import yanbinwa.common.exceptions.ServiceUnavailableException;
+import yanbinwa.common.utils.JsonUtil;
+import yanbinwa.common.utils.MapUtil;
 import yanbinwa.common.utils.ZkUtil;
 import yanbinwa.common.zNodedata.ZNodeData;
 import yanbinwa.common.zNodedata.ZNodeDataUtil;
@@ -53,12 +59,9 @@ public class OrchestrationServiceImpl implements OrchestrationService
     
     private static final Logger logger = Logger.getLogger(OrchestrationServiceImpl.class);
     
-    @Value("${orchestration.dependencyProperties:}")
-    private String dependencyProperties;
-    
     private Map<String, String> serviceDataProperties;
     private Map<String, String> zNodeInfoProperties;
-    private Map<String, Object> monitorProperties;
+    
     
     public void setServiceDataProperties(Map<String, String> properties)
     {
@@ -80,26 +83,21 @@ public class OrchestrationServiceImpl implements OrchestrationService
         return this.zNodeInfoProperties;
     }
     
-    public void setMonitorProperties(Map<String, Object> properties)
-    {
-        this.monitorProperties = properties;
-    }
-    
-    public Map<String, Object> getMonitorProperties()
-    {
-        return this.monitorProperties;
-    }
+    private String dependencyProperties = null;
+    private Map<String, Object> monitorProperties = null;
     
     DependencyManagement dependencyManagement = null;
     Map<String, MonitorManagement> serviceMonitorMap = new HashMap<String, MonitorManagement>();
     
     ZNodeServiceData serviceData = null;
     
+    String configZnodePath = null;
     String regZnodePath = null;
     String regZnodeChildPath = null;
     String depZnodePath = null;
     String zookeeperHostport = null;
     
+    volatile boolean isConfiged = false;
     volatile boolean isRunning = false;
     
     /** 主要处理zookeeper事件的方法*/
@@ -118,48 +116,46 @@ public class OrchestrationServiceImpl implements OrchestrationService
     /** active or standby */
     volatile int serviceStatue = CommonConstants.SERVICE_STANDBY;
     
+    private ConfigClient configClient = null;
+    
+    ConfigCallBack configCallBack = new OrchestrationConfigCallBack();
+    
+    /** config update lock */
+    ReentrantLock lock = new ReentrantLock();
+    
     @Override
     public void afterPropertiesSet() throws Exception
     {
-        if(dependencyProperties == null)
-        {
-            logger.error("Service dependences is null");
-            throw new Exception("Service dependences is null");
-        }
-        init();
+        /* 获取服务自身信息 */
+        String serviceGroup = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_SERVICEGROUPNAME);
+        String serviceName = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_SERVICENAME);
+        String ip = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_IP);
+        String portStr = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_PORT);
+        int port = Integer.parseInt(portStr);
+        String rootUrl = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_ROOTURL);
+        serviceData = new ZNodeServiceDataImpl(ip, serviceGroup, serviceName, port, rootUrl);
+        
+        /* Zookeeper操作相关信息 */
+        regZnodePath = zNodeInfoProperties.get(OrchestrationServiceImpl.ZNODE_REGPATH);
+        regZnodeChildPath = zNodeInfoProperties.get(OrchestrationServiceImpl.ZNODE_REGCHILDPATH);
+        depZnodePath = zNodeInfoProperties.get(OrchestrationServiceImpl.ZNODE_DEPPATH);
+        zookeeperHostport = zNodeInfoProperties.get(OrchestrationServiceImpl.ZK_HOSTPORT);
+        
+        configClient = new ConfigClientImpl(serviceData, configCallBack, zookeeperHostport, zNodeInfoProperties);
         start();
     }
 
+    /**
+     * Start 会创建ConfigClient，这里应该有一个ServiceState状态机，Init，Configed，IsReady是获取Config后的状态.
+     * Stop 会
+     */
     @Override
     public void start()
     {
         if(!isRunning)
         {
-            logger.info("Start orchestration serivce ...");
             isRunning = true;
-            /** 连接Zookeeper，创建相应的Znode，并监听其它服务创建的Znode */
-            zookeeperThread = new Thread(new Runnable() {
-
-                @Override
-                public void run()
-                {
-                    zookeeperEventHandler();
-                }
-                
-            });
-            zookeeperThread.start();
-            
-            /** 定期创建一个WatcherEvent, 让服务自动与zookeeper同步 */
-            zookeeperSync = new Thread(new Runnable() {
-
-                @Override
-                public void run()
-                {
-                    syncWithZookeeper();
-                }
-                
-            });
-            zookeeperSync.start();
+            configClient.start();
         }
         else
         {
@@ -172,22 +168,11 @@ public class OrchestrationServiceImpl implements OrchestrationService
     {
         if (isRunning)
         {
-            logger.info("Stop orchestration serivce ...");
             isRunning = false;
-
-            if (zookeeperThread != null)
+            if (configClient != null)
             {
-                zookeeperThread.interrupt();
-                zookeeperThread = null;
+                configClient.stop();
             }
-            if (zookeeperSync != null)
-            {
-                zookeeperSync.interrupt();
-                zookeeperSync = null;
-            }
-            serviceStatue = CommonConstants.SERVICE_STANDBY;
-            stopMonitorManagement();
-            dependencyManagement.reset();
         }
         else
         {
@@ -198,7 +183,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public JSONObject getReadyService() throws ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -208,7 +193,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public boolean isServiceReady(String serviceName) throws ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -218,7 +203,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public boolean isActiveManageService() throws ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -246,7 +231,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public ZNodeServiceData getRegZnodeData(String zNodeName) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -280,7 +265,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public boolean isRegZnodeExist(String serviceName) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -291,7 +276,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public boolean isDepZnodeExist(String serviceGroupName) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -302,7 +287,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public void createDepZnode(String serviceGroupName, ZNodeDependenceData zNodeDependenceData) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -313,7 +298,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public void updateDepZnode(String serviceGroupName, ZNodeDependenceData zNodeDependenceData) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -324,7 +309,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public void deleteRegZnode(String serviceName) throws InterruptedException, KeeperException, ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -335,7 +320,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public void createRegZnode(String serviceName, ZNodeData zNodeData) throws KeeperException, InterruptedException, ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
@@ -347,12 +332,64 @@ public class OrchestrationServiceImpl implements OrchestrationService
     @Override
     public void deleteDepZnode(String serviceName) throws InterruptedException, KeeperException, ServiceUnavailableException
     {
-        if (!isRunning)
+        if (!isServiceReadyToWork())
         {
             throw new ServiceUnavailableException();
         }
         String path = getDepZnodePathForChildNode(serviceName);
         ZkUtil.deleteZnode(zk, path);
+    }
+    
+
+    @Override
+    public void startWork()
+    {
+        logger.info("Start work orchestration serivce ...");
+        /** 连接Zookeeper，创建相应的Znode，并监听其它服务创建的Znode */
+        init();
+        zookeeperThread = new Thread(new Runnable() {
+
+            @Override
+            public void run()
+            {
+                zookeeperEventHandler();
+            }
+            
+        });
+        zookeeperThread.start();
+        
+        /** 定期创建一个WatcherEvent, 让服务自动与zookeeper同步 */
+        zookeeperSync = new Thread(new Runnable() {
+
+            @Override
+            public void run()
+            {
+                syncWithZookeeper();
+            }
+            
+        });
+        zookeeperSync.start();
+    }
+
+    @Override
+    public void stopWork()
+    {
+        logger.info("Stop work orchestration serivce ...");
+
+        if (zookeeperThread != null)
+        {
+            zookeeperThread.interrupt();
+            zookeeperThread = null;
+        }
+        if (zookeeperSync != null)
+        {
+            zookeeperSync.interrupt();
+            zookeeperSync = null;
+        }
+        serviceStatue = CommonConstants.SERVICE_STANDBY;
+        stopMonitorManagement();
+        dependencyManagement.reset();
+        reset();
     }
     
     private void init()
@@ -362,16 +399,14 @@ public class OrchestrationServiceImpl implements OrchestrationService
         dependencyManagement = new DependencyManagementImpl(this, serviceDependencesObj);
         
         /* 创建Monitor */
+        resetMonitorServiceMap();
         buildMonitorServiceMap();
-        
-        /* 获取服务自身信息 */
-        buildServiceData();
-        
-        /* Zookeeper操作相关信息 */
-        regZnodePath = zNodeInfoProperties.get(OrchestrationServiceImpl.ZNODE_REGPATH);
-        regZnodeChildPath = zNodeInfoProperties.get(OrchestrationServiceImpl.ZNODE_REGCHILDPATH);
-        depZnodePath = zNodeInfoProperties.get(OrchestrationServiceImpl.ZNODE_DEPPATH);
-        zookeeperHostport = zNodeInfoProperties.get(OrchestrationServiceImpl.ZK_HOSTPORT);
+    }
+    
+    private void reset()
+    {
+        dependencyProperties = null;
+        monitorProperties = null;
     }
     
     @SuppressWarnings("unchecked")
@@ -399,7 +434,7 @@ public class OrchestrationServiceImpl implements OrchestrationService
                 switch(serviceName)
                 {
                 case MONITOR_KAFKA_KEY:
-                    monitorManagement = new KafkaMonitorManagementImpl((Map<String, String>)monitorPropertyObj, this);
+                    monitorManagement = new KafkaMonitorManagementImpl((Map<String, Object>)monitorPropertyObj, this);
                     break;
                 case MONITOR_REDIS_KEY:
                     monitorManagement = new RedisMonitorManagementImpl((Map<String, Object>)monitorPropertyObj, this);
@@ -414,15 +449,9 @@ public class OrchestrationServiceImpl implements OrchestrationService
         }
     }
     
-    private void buildServiceData()
+    private void resetMonitorServiceMap()
     {
-        String serviceGroup = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_SERVICEGROUPNAME);
-        String serviceName = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_SERVICENAME);
-        String ip = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_IP);
-        String portStr = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_PORT);
-        int port = Integer.parseInt(portStr);
-        String rootUrl = serviceDataProperties.get(OrchestrationServiceImpl.SERVICE_ROOTURL);
-        serviceData = new ZNodeServiceDataImpl(ip, serviceGroup, serviceName, port, rootUrl);
+        serviceMonitorMap.clear();
     }
 
     private void zookeeperEventHandler()
@@ -833,6 +862,92 @@ public class OrchestrationServiceImpl implements OrchestrationService
         }
     }
     
+    /**
+     *  如果serviceConfigProperties内容不一致，就要停掉之前的工作，进行更新，再启动（需要必须停止吗）
+     */
+    @SuppressWarnings("unchecked")
+    private void updateServiceConfigProperties(JSONObject serviceConfigPropertiesObj)
+    {
+        if (!serviceConfigPropertiesObj.has(CommonConstants.SERVICE_DEPENDENCE_PROPERTIES_KEY))
+        {
+            logger.error("serviceConfigPropertiesObj does not contains dependencyProperties; serviceConfigPropertiesObj: " + serviceConfigPropertiesObj);
+        }
+        String dependencyPropertiesTmp = serviceConfigPropertiesObj.getString(CommonConstants.SERVICE_DEPENDENCE_PROPERTIES_KEY);
+        if (dependencyPropertiesTmp == null)
+        {
+            logger.error("dependencyPropertiesTmp should not be null");
+            return;
+        }
+        
+        if (!serviceConfigPropertiesObj.has(CommonConstants.SERVICE_MONITOR_PROPERTIES_KEY))
+        {
+            logger.error("serviceConfigPropertiesObj does not contains monitorProperties; serviceConfigPropertiesObj: " + serviceConfigPropertiesObj);
+        }
+        JSONObject monitorPropertiesTmpObj = serviceConfigPropertiesObj.getJSONObject(CommonConstants.SERVICE_MONITOR_PROPERTIES_KEY);
+        
+        Map<String, Object> monitorPropertiesTmp = (Map<String, Object>) JsonUtil.JsonStrToMap(monitorPropertiesTmpObj.toString());
+        if (monitorPropertiesTmp == null)
+        {
+            logger.info("dependencyProperties is null");
+            monitorPropertiesTmp = new HashMap<String, Object>();
+        }
+        
+        boolean ret = compareAndUpdataServiceConfigProperties(dependencyPropertiesTmp, monitorPropertiesTmp);
+        if (ret)
+        {
+            logger.info("Update the serviceProperties for Orchestration.");
+            logger.info("dependencyPropertiesTmp is: " + dependencyPropertiesTmp + "; monitorPropertiesTmp is: " + monitorPropertiesTmp);
+            if (isConfiged)
+            {
+                stopWork();
+            }
+            isConfiged = true;
+            startWork();
+        }
+    }
+    
+    /**
+     * 比较配置是否一致，尤其是monitor配置的比较
+     * 
+     * @param dependencyPropertiesTmp
+     * @param monitorPropertiesTmp
+     * @return
+     */
+    private boolean compareAndUpdataServiceConfigProperties(String dependencyPropertiesTmp, Map<String, Object> monitorPropertiesTmp)
+    {
+        lock.lock();
+        try
+        {
+            if (dependencyProperties == null || monitorProperties == null)
+            {
+                dependencyProperties = dependencyPropertiesTmp;
+                monitorProperties = monitorPropertiesTmp;
+                return true;
+            }
+            boolean isChanged = false;
+            if (!dependencyProperties.equals(dependencyPropertiesTmp))
+            {
+                isChanged = true;
+                dependencyProperties = dependencyPropertiesTmp;
+            }
+            
+            if (!MapUtil.compareMap(monitorProperties, monitorPropertiesTmp))
+            {
+                isChanged = true;
+                monitorProperties = monitorPropertiesTmp;
+            }
+            return isChanged;
+        }
+        finally
+        {
+            lock.unlock();
+        }
+    }
+    
+    private boolean isServiceReadyToWork()
+    {
+        return isRunning && isConfiged;
+    }
     
     class ZkWatcher implements Watcher
     {
@@ -843,4 +958,36 @@ public class OrchestrationServiceImpl implements OrchestrationService
         } 
     }
     
+    class OrchestrationConfigCallBack implements ConfigCallBack
+    {
+        @Override
+        public void handleServiceConfigChange(ServiceConfigState state)
+        {
+            logger.info("Service config state is: " + state);
+            if (state == ServiceConfigState.CREATED || state == ServiceConfigState.CHANGED)
+            {
+                JSONObject serviceConfigPropertiesObj = configClient.getServiceConfigProperties();
+                if (ZNodeDataUtil.validateServiceConfigProperties(serviceData, serviceConfigPropertiesObj))
+                {
+                    updateServiceConfigProperties(serviceConfigPropertiesObj);
+                }
+                else
+                {
+                    logger.error("Un valid service config properties: " + serviceConfigPropertiesObj);
+                }
+            }
+            else if (state == ServiceConfigState.DELETED || state == ServiceConfigState.CLOSE)
+            {
+                if (isConfiged)
+                {
+                    stopWork();
+                }
+                isConfiged = false;
+            }
+            else
+            {
+                logger.error("Unknow ServiceConfigState: " + state);
+            }
+        }
+    }
 }

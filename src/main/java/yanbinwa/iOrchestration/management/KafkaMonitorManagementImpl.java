@@ -19,6 +19,7 @@ import yanbinwa.iOrchestration.service.OrchestrationService;
 public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
 {
     private static final Logger logger = Logger.getLogger(KafkaMonitorManagementImpl.class);
+    private static final String KAFKA_SERVICE_NAME = "kafka";
     
     String kafkaHostPort = null;
     String monitorTopic = null;
@@ -30,29 +31,36 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
     
     OrchestrationService orchestrationService = null;
     
-    public KafkaMonitorManagementImpl(Map<String, String> kafkaProperites, OrchestrationService orchestrationService)
+    @SuppressWarnings("unchecked")
+    public KafkaMonitorManagementImpl(Map<String, Object> kafkaProperites, OrchestrationService orchestrationService)
     {
         this.orchestrationService = orchestrationService;
-        
-        kafkaHostPort = kafkaProperites.get(OrchestrationService.KAFKA_HOSTPORT_KEY);
-        if (kafkaHostPort == null)
+        Object kafkaProperty = kafkaProperites.get(KAFKA_SERVICE_NAME);
+        if (kafkaProperty == null || !(kafkaProperty instanceof Map))
         {
-            logger.error("Kafka host port should not be null");
+            logger.error("kafkaProperty property should be map " + kafkaProperty);
             return;
         }
-        monitorTopic = kafkaProperites.get(OrchestrationService.KAFKA_TEST_TOPIC_KEY);
+        Map<String, String> kafkaPropertyMap = (Map<String, String>)kafkaProperty;
+        kafkaHostPort = kafkaPropertyMap.get(OrchestrationService.KAFKA_HOSTPORT_KEY);
+        if (kafkaHostPort == null)
+        {
+            logger.error("Kafka host port should not be null. The kafkaProperites is: " + kafkaProperites);
+            return;
+        }
+        monitorTopic = kafkaPropertyMap.get(OrchestrationService.KAFKA_TEST_TOPIC_KEY);
         if (monitorTopic == null)
         {
             logger.error("Kafka monitor topic should not be null");
             return;
         }
-        String serviceGroupName = kafkaProperites.get(OrchestrationService.SERVICE_SERVICEGROUPNAME);
+        String serviceGroupName = kafkaPropertyMap.get(OrchestrationService.SERVICE_SERVICEGROUPNAME);
         if (serviceGroupName == null)
         {
             logger.error("Kafka service group name should not be null");
             return;
         }
-        String serviceName = kafkaProperites.get(OrchestrationService.SERVICE_SERVICENAME);
+        String serviceName = kafkaPropertyMap.get(OrchestrationService.SERVICE_SERVICENAME);
         if (serviceName == null)
         {
             logger.error("Kafka service name should not be null");

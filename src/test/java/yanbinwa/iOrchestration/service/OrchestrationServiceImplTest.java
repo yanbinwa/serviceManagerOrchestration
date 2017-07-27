@@ -1,8 +1,12 @@
 package yanbinwa.iOrchestration.service;
 
+import java.util.Map;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
+
+import yanbinwa.common.utils.JsonUtil;
 
 public class OrchestrationServiceImplTest
 {
@@ -52,6 +56,15 @@ public class OrchestrationServiceImplTest
         String dependenceStr = "{\"serviceDependency\":{\"cache\":[\"kafka\"],\"kafka\":[],\"collection\":[\"kafka\",\"cache\"]},\"kafkaTopicInfo\":{\"cacheTopic\":10}}";
         JSONObject obj = new JSONObject(dependenceStr);
         System.out.println(obj.toString());
+    }
+    
+    @SuppressWarnings("unchecked")
+    @Test
+    public void jsonToMap()
+    {
+        String testStr = "{\"id\":12,\"name\":\"mary\"}";
+        Map<String, Object> objMap = JsonUtil.JsonStrToMap(testStr);
+        System.out.println(objMap);
     }
 
 }
