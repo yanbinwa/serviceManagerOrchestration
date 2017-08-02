@@ -456,7 +456,6 @@ public class OrchestrationServiceImpl implements OrchestrationService
 
     private void zookeeperEventHandler()
     {
-        isRunning = true;
         if(zk != null)
         {
             try
