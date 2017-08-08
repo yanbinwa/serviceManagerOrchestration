@@ -12,14 +12,17 @@ import org.apache.log4j.Logger;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import kafka.utils.ZkUtils;
 import yanbinwa.common.constants.CommonConstants;
+import yanbinwa.common.utils.KafkaUtil;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 import yanbinwa.common.zNodedata.decorate.ZNodeDecorateType;
 import yanbinwa.common.zNodedata.decorate.ZNodeServiceDataDecorateKafka;
 
 /**
  * 
- * 管理topic与
+ * 管理topic，这里的topic只是对应于consumer的topic，当有新的topic添加时，需要同时创建相应的topic
+ * 但是旧的topic先不要删除
  * 
  * @author yanbinwa
  *
@@ -40,9 +43,18 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
     /** copyOnWrite lock */
     ReentrantLock lock = new ReentrantLock();
     
+    private String zookeeperHostPort = null;
+    
     public KafkaTopicManagementImpl(JSONObject kafkaTopicInfo)
     {
-        buildTopicGroupToPartitionNumMap(kafkaTopicInfo);
+        zookeeperHostPort = kafkaTopicInfo.getString(ZOOKEEPER_HOST_PORT_KEY);
+        if (zookeeperHostPort == null)
+        {
+            logger.error("zookeeperHostIp should not be null");
+            return;
+        }
+        JSONObject topics = kafkaTopicInfo.getJSONObject(KAFKA_TOPICS_KEY);
+        buildTopicGroupToPartitionNumMap(topics);
     }
     
     /**
@@ -139,6 +151,11 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
         {
             logger.info("addTopicGroupToTopicMap is: " + addTopicGroupToTopicMap + "; delTopicGroupToTopicMap is " + delTopicGroupToTopicMap);
             updateTopicToPartitionKeyMap(addTopicGroupToTopicMap, delTopicGroupToTopicMap);
+        }
+        if (!addTopicGroupToTopicMap.isEmpty())
+        {
+            logger.info("create kafka topic for addTopicGroupToTopicMap " + addTopicGroupToTopicMap);
+            createAddTopic(addTopicGroupToTopicMap);
         }
     }
     
@@ -542,6 +559,49 @@ public class KafkaTopicManagementImpl implements KafkaTopicManagement
             topicGroupSet.add(topicGroupSetObj.getString(i));
         }
         return topicGroupSet;
+    }
+    
+    private void createAddTopic(Map<String, Set<String>> addTopicGroupToTopicMap)
+    {
+        if (addTopicGroupToTopicMap == null || addTopicGroupToTopicMap.isEmpty())
+        {
+            return;
+        }
+        Map<String, Object> zookeeperProperties = new HashMap<String, Object>();
+        zookeeperProperties.put(CommonConstants.ZOOKEEPER_HOSTPORT_KEY, zookeeperHostPort);
+        ZkUtils zkUtils = KafkaUtil.createZkUtils(zookeeperProperties);
+        try
+        {
+            Map<String, Object> topicProperties = new HashMap<String, Object>();
+            for(Set<String> topicSet : addTopicGroupToTopicMap.values())
+            {
+                if (topicSet == null || topicSet.isEmpty())
+                {
+                    continue;
+                }
+                for (String topic : topicSet)
+                {
+                    if (topic == null)
+                    {
+                        continue;
+                    }
+                    topicProperties.put(CommonConstants.KAFKA_TOPIC_KEY, topic);
+                    if (!KafkaUtil.isTopicExist(zkUtils, topicProperties))
+                    {
+                        logger.info("Create topic " + topic);
+                        KafkaUtil.createTopic(zkUtils, topicProperties);
+                    }
+                    else
+                    {
+                        logger.info("topic " + topic + " is existed. Does not need to create");
+                    }
+                }
+            }
+        }
+        finally
+        {
+            KafkaUtil.closeZkUtils(zkUtils);
+        }
     }
 
 }

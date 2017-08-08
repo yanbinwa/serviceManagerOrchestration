@@ -43,7 +43,11 @@ public class OrchestrationServiceImplTest
         rootObj.put("serviceDependency", serviceDependenceObj);
         
         JSONObject kafkaTopicInfoObj = new JSONObject();
-        kafkaTopicInfoObj.put("aggregationTopic", 10);
+        JSONObject topics = new JSONObject();
+        topics.put("aggregationTopic", 10);
+        kafkaTopicInfoObj.put("topics", topics);
+        String zookeeperHostIp = "172.18.0.11:2191";
+        kafkaTopicInfoObj.put("zookeeperHostport", zookeeperHostIp);
         rootObj.put("kafkaTopicInfo", kafkaTopicInfoObj);
         
         rootObj.put("redisPartitionNum", 10);

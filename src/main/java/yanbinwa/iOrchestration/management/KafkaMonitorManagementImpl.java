@@ -178,7 +178,7 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
             if (isTimeout)
             {
                 //这里说明kafka出现问题，删除Kafka的node
-                logger.trace("Send msg to kafka timeout. Need to reconnect");
+                logger.info("Send msg to kafka timeout. Need to reconnect");
                 closeKafkaProducer();
                 try
                 {
@@ -193,12 +193,12 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
                     }
                     else
                     {
-                        e.printStackTrace();
+                        logger.error(e.getMessage());
                     }
                 } 
                 catch (KeeperException e)
                 {
-                    e.printStackTrace();
+                    logger.error(e.getMessage());
                 } 
                 catch (ServiceUnavailableException e)
                 {
@@ -224,12 +224,12 @@ public class KafkaMonitorManagementImpl implements MonitorManagement, Callback
                     }
                     else
                     {
-                        e.printStackTrace();
+                        logger.error(e.getMessage());
                     }
                 } 
                 catch (KeeperException e)
                 {
-                    e.printStackTrace();
+                    logger.error(e.getMessage());
                 } 
                 catch (ServiceUnavailableException e)
                 {

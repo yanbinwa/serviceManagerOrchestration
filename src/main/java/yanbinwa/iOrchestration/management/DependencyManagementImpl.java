@@ -19,7 +19,6 @@ import yanbinwa.common.zNodedata.ZNodeDependenceDataImpl;
 import yanbinwa.common.zNodedata.ZNodeServiceData;
 import yanbinwa.common.zNodedata.decorate.ZNodeDecorateType;
 import yanbinwa.iOrchestration.service.OrchestrationService;
-import yanbinwa.iOrchestration.service.OrchestrationServiceImpl;
 
 /**
  * 
@@ -55,7 +54,7 @@ public class DependencyManagementImpl implements DependencyManagement
     
     RedisPartitionManagement redisPartitionManagement = null;
     
-    public DependencyManagementImpl(OrchestrationServiceImpl orchestrationServiceImpl, JSONObject dependencyProperties)
+    public DependencyManagementImpl(OrchestrationService orchestrationServiceImpl, JSONObject dependencyProperties)
     {
         if (orchestrationServiceImpl == null)
         {
