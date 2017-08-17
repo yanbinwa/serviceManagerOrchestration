@@ -5,6 +5,7 @@ import static org.junit.Assert.*;
 import org.junit.Test;
 
 import yanbinwa.common.redis.RedisClient;
+import yanbinwa.iOrchestration.constants.OrchestrationConstants;
 
 public class RedisMonitorManagementImplTest
 {
@@ -12,8 +13,8 @@ public class RedisMonitorManagementImplTest
     @Test
     public void test()
     {
-        String host = "192.168.56.17";
-        int port = 6379;
+        String host = OrchestrationConstants.TEST_SERVER_IP;
+        int port = OrchestrationConstants.TEST_REDIS_PORT;
         int maxtotal = 1;
         int maxIdle = 1;
         long maxWaitTime = -1;
